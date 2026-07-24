@@ -13,12 +13,13 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.sharing import Grant, PublicLink, Role
+from cyberfs.domain.stats import TenantStatistics, UserStorage
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -177,6 +178,18 @@ class AuditRepository(Protocol):
         ...
 
 
+class AdminQueries(Protocol):
+    """Aggregate reads for the admin surface. Sums and counts only."""
+
+    async def user_storage(self, user_id: uuid.UUID) -> UserStorage | None: ...
+    async def all_user_storage(self, *, limit: int) -> tuple[UserStorage, ...]: ...
+    async def tenant(self, **kwargs: Any) -> TenantStatistics: ...
+
+    async def reconcile_total(self) -> int:
+        """Sum of live file sizes, so reported totals can be checked."""
+        ...
+
+
 class UnitOfWork(Protocol):
     """One transaction, owned by the application layer.
 
@@ -192,6 +205,9 @@ class UnitOfWork(Protocol):
     keys: KeyRepository
     quotas: QuotaRepository
     audit: AuditRepository
+    #: Read-only aggregates for the admin surface. Sums and counts only --
+    #: there is no method here that could return content.
+    admin: AdminQueries
 
     async def __aenter__(self) -> UnitOfWork: ...
     async def __aexit__(self, *exc: object) -> None: ...

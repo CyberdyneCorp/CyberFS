@@ -34,10 +34,12 @@ from cyberfs.adapters.inbound.api.composition import (
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
+from cyberfs.adapters.inbound.api.routers import admin as admin_router
 from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
 from cyberfs.adapters.inbound.api.routers import shares as shares_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
+from cyberfs.application.admin import AdminService
 from cyberfs.application.health import HealthService
 from cyberfs.application.nodes import NodeService
 from cyberfs.infrastructure.db import create_engine, create_session_factory
@@ -119,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.objects = build_object_store(settings)
     app.state.content = build_content(settings, app.state.objects, app.state.encryption)
     app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
+    app.state.admin = AdminService(show_filenames=settings.admin_show_filenames)
     app.state.sharing = build_sharing(
         settings, app.state.http, app.state.encryption, app.state.cache
     )
@@ -145,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(nodes_router.router)
     app.include_router(content_router.router)
     app.include_router(shares_router.router)
+    app.include_router(admin_router.router)
     if settings.metrics_enabled:
         app.include_router(metrics.router)
 

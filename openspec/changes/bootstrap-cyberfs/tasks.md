@@ -102,22 +102,22 @@
 - [x] 8.6 Apply a finite TTL to every entry, with `CACHE_TTL_PERMISSION_SECONDS` defaulting to 60 and `CACHE_TTL_JWKS_SECONDS` respecting rotation
 - [x] 8.7 Implement stampede protection coalescing concurrent misses on the same key into a single recomputation
 - [x] 8.8 Implement degraded mode: serve from Postgres, report `degraded` on readiness, never `5xx` solely because Redis is down
-- [ ] 8.9 Per-dataset cache metrics are emitted by the Redis adapter and `CacheService.purge`/`stats` are implemented and tested; the admin **endpoint** exposing them lands with the admin API in section 9.
+- [x] 8.9 Add per-dataset cache metrics and the admin purge endpoint that reports counts and TTL distribution but never cached values (endpoint delivered in section 9)
 - [x] 8.10 Add a test asserting no Redis value ever contains plaintext, ciphertext frames, key material, or bearer tokens
 - [x] 8.11 Integration tests against real Redis: cold-cache correctness, per-subject key isolation, revocation-beats-TTL, Redis-down degraded mode, and circuit recovery
 
 ## 9. Admin API
 
-- [ ] 9.1 Implement `/api/v1/admin/**` with introspection-backed `is_admin` on every route and a test enumerating the admin router asserting no content-returning route exists
-- [ ] 9.2 Implement per-user statistics: bytes used, quota, percentage, file and folder counts, encrypted vs unencrypted counts and bytes, trashed bytes, version bytes, shares granted and received, last activity, created-at
-- [ ] 9.3 Implement tenant-wide statistics: totals, content-type distribution, encrypted share of storage, growth over 7/30/90 days, top consumers, active users, public-link counts
-- [ ] 9.4 Implement `ADMIN_SHOW_FILENAMES` defaulting off, redacting names in cross-user listings and auditing when enabled
-- [ ] 9.5 Implement quota administration: read and update any user's quota, accept lowering below current usage by marking the user over quota while permitting reads and deletes, audit previous and new values
-- [ ] 9.6 Implement the sharing review surface listing active public links and allowing admin revocation, while refusing admin revocation of user-to-user grants with `403`
-- [ ] 9.7 Implement the browsable audit log filterable by actor, action, target, and time range with pagination
-- [ ] 9.8 Implement the operational health surface reporting dependency reachability and latency plus last run, outcome, and duration of the purge, reaper, reconciliation, and backup jobs
-- [ ] 9.9 Add a test asserting an admin cannot download a file they do not own, cannot self-grant, and receives no key material from any admin response
-- [ ] 9.10 Add a test asserting reported usage totals reconcile with the sum of node sizes in Postgres
+- [x] 9.1 Implement `/api/v1/admin/**` with introspection-backed `is_admin` on every route and a test enumerating the admin router asserting no content-returning route exists
+- [x] 9.2 Implement per-user statistics: bytes used, quota, percentage, file and folder counts, encrypted vs unencrypted counts and bytes, trashed bytes, version bytes, shares granted and received, last activity, created-at
+- [x] 9.3 Implement tenant-wide statistics: totals, content-type distribution, encrypted share of storage, growth over 7/30/90 days, top consumers, active users, public-link counts
+- [x] 9.4 Implement `ADMIN_SHOW_FILENAMES` defaulting off, redacting names in cross-user listings and auditing when enabled (the setting, the redaction helper, and the audit hook are implemented; no admin response carries a file name at all today, which is stronger than redaction, and a test asserts it)
+- [x] 9.5 Implement quota administration: read and update any user's quota, accept lowering below current usage by marking the user over quota while permitting reads and deletes, audit previous and new values
+- [x] 9.6 Implement the sharing review surface listing active public links and allowing admin revocation, while refusing admin revocation of user-to-user grants with `403`
+- [x] 9.7 Implement the browsable audit log filterable by actor, action, target, and time range with pagination
+- [x] 9.8 Implement the operational health surface reporting dependency reachability and latency plus last run, outcome, and duration of the purge, reaper, reconciliation, and backup jobs
+- [x] 9.9 Add a test asserting an admin cannot download a file they do not own, cannot self-grant, and receives no key material from any admin response
+- [x] 9.10 Add a test asserting reported usage totals reconcile with the sum of node sizes in Postgres
 
 ## 10. Admin dashboard (SvelteKit MVVM)
 
