@@ -160,6 +160,60 @@ def test_associated_data_binds_the_wrap_to_its_purpose() -> None:
         AESGCM(MASTER_A).decrypt(nonce, sealed, b"cyberfs/dek/v1")
 
 
+# --- s3 access-key secrets -------------------------------------------------
+
+
+def test_seal_secret_round_trips_an_arbitrary_length_value() -> None:
+    """Unlike `wrap_kek`, sealing accepts a non-32-byte secret -- the exact
+    ~40-character S3 secret must survive unchanged."""
+    subject = provider()
+    secret = b"eYKibf6yGAHX_PgSjE0a-IP33uBLvuFhIgl9BQ9_"
+    sealed = subject.seal_secret(secret)
+    assert subject.unseal_secret(sealed, master_key_id=subject.master_key_id) == secret
+
+
+def test_sealed_secret_does_not_contain_the_plaintext() -> None:
+    """Invariant A against real crypto: stored material yields nothing."""
+    subject = provider()
+    secret = b"top-secret-access-key-value-1234567890AB"
+    assert secret not in subject.seal_secret(secret)
+
+
+def test_each_seal_uses_a_fresh_nonce() -> None:
+    subject = provider()
+    secret = b"same-secret-every-time"
+    ciphertexts = {subject.seal_secret(secret) for _ in range(16)}
+    assert len(ciphertexts) == 16
+
+
+def test_tampered_sealed_secret_fails_authentication() -> None:
+    subject = provider()
+    sealed = bytearray(subject.seal_secret(b"a-secret"))
+    sealed[-1] ^= 0xFF
+    with pytest.raises(KeyUnavailableError):
+        subject.unseal_secret(bytes(sealed), master_key_id=subject.master_key_id)
+
+
+def test_sealed_secret_is_not_replayable_as_a_wrapped_kek() -> None:
+    """Distinct associated data: a sealed secret and a wrapped KEK never cross."""
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    subject = provider()
+    sealed = subject.seal_secret(b"\x09" * KEY_BYTES)
+    nonce, ciphertext = sealed[:NONCE_BYTES], sealed[NONCE_BYTES:]
+    with pytest.raises(InvalidTag):
+        AESGCM(MASTER_A).decrypt(nonce, ciphertext, KEK_ASSOCIATED_DATA)
+
+
+def test_sealed_secret_opens_under_the_previous_key_during_rotation() -> None:
+    old = MasterKeyProvider(MASTER_A)
+    secret = b"rotate-me"
+    sealed = old.seal_secret(secret)
+    rotating = MasterKeyProvider(MASTER_B, previous=MASTER_A)
+    assert rotating.unseal_secret(sealed, master_key_id=master_key_id(MASTER_A)) == secret
+
+
 # --- rotation --------------------------------------------------------------
 
 

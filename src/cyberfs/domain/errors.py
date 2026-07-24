@@ -53,6 +53,55 @@ class RateLimitedError(CyberFSError):
     title = "Too many requests"
 
 
+# --- s3 signature-v4 -------------------------------------------------------
+#
+# A signature-verification failure is a permission failure, so each of these
+# subclasses `PermissionDeniedError` and renders 403 if it ever reaches the
+# REST error mapper unchanged. Every one also carries an `s3_code`: phase 6
+# serialises that into the S3 `<Error>` XML document (its own status and
+# message), so the S3 surface speaks S3's dialect while the domain keeps a
+# single semantic taxonomy. Only the verifier and these types live here; the
+# XML surface is deliberately built later.
+
+
+class S3RequestError(PermissionDeniedError):
+    """Base for a rejected S3 request. Defaults to the generic S3 denial."""
+
+    code = "s3_error"
+    #: The AWS S3 error code phase 6 serialises into the `<Error>` document.
+    s3_code = "AccessDenied"
+
+
+class SignatureMismatchError(S3RequestError):
+    code = "signature_mismatch"
+    title = "Request signature does not match"
+    s3_code = "SignatureDoesNotMatch"
+
+
+class UnknownAccessKeyError(S3RequestError):
+    code = "unknown_access_key"
+    title = "Access key is not recognised"
+    s3_code = "InvalidAccessKeyId"
+
+
+class RequestSkewedError(S3RequestError):
+    code = "request_skewed"
+    title = "Request time is too far from the server clock"
+    s3_code = "RequestTimeTooSkewed"
+
+
+class ContentHashMismatchError(S3RequestError):
+    code = "content_mismatch"
+    title = "Body does not match the signed content hash"
+    s3_code = "XAmzContentSHA256Mismatch"
+
+
+class S3AccessDeniedError(S3RequestError):
+    code = "s3_access_denied"
+    title = "Access denied"
+    s3_code = "AccessDenied"
+
+
 # --- lookup ----------------------------------------------------------------
 
 

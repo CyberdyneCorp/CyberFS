@@ -29,12 +29,13 @@ carry permissions of its own, and SHALL NOT outlive the account it belongs to.
 - **WHEN** the owning subject is no longer active at CyberdyneAuth
 - **THEN** requests signed with their keys SHALL be refused
 
-#### Scenario: Key material is stored irreversibly
+#### Scenario: Key material is never stored in cleartext
 
 - **WHEN** an access key is created
-- **THEN** the secret SHALL be stored only as a verifier from which it cannot be
-  recovered, and SHALL never appear in a log, a metric, or an API response after
-  creation
+- **THEN** the secret SHALL never be persisted in cleartext -- because SigV4 must
+  reproduce it, it SHALL be sealed under the deployment `MASTER_KEY` held outside
+  the database, so a database leak alone recovers nothing -- and SHALL never
+  appear in a log, a metric, or an API response after creation
 
 #### Scenario: Revocation is immediate and needs no cache expiry
 

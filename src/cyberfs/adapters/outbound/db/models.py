@@ -237,6 +237,41 @@ class WrappedDataKeyRow(Base):
     )
 
 
+class S3AccessKeyRow(Base):
+    """An S3 access-key credential. The secret is stored only sealed under
+    `MASTER_KEY` -- never in the clear, and never recoverable from this row
+    alone."""
+
+    __tablename__ = "s3_access_keys"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: The public access-key id, unique so a signed request resolves to exactly
+    #: one credential.
+    key_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: The secret access key, sealed under `MASTER_KEY`. A database leak alone
+    #: yields nothing without the master key held outside the database.
+    sealed_secret: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: Which master key sealed the secret; drives resumable rotation.
+    secret_master_key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: A key must not outlive its account, so it cascades with the user row.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The CyberdyneAuth subject a request signed with this key resolves to.
+    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(TimestampTz, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(TimestampTz, nullable=True)
+
+    __table_args__ = (
+        # The signing hot path is a single lookup by key id; it must be unique.
+        Index("uq_s3_access_keys_key_id", "key_id", unique=True),
+        # Listing and rotation read by owner.
+        Index("ix_s3_access_keys_owner", "owner_subject"),
+    )
+
+
 class QuotaUsageRow(Base):
     __tablename__ = "quota_usage"
 

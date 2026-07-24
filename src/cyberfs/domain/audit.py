@@ -35,6 +35,12 @@ class AuditAction(StrEnum):
     ENCRYPTION_OVERRIDDEN = "node.encryption_overridden"
     KEY_ROTATED = "key.rotated"
 
+    # --- s3 access keys -----------------------------------------------
+    # Security records: the lifecycle of a long-lived credential is retained,
+    # never activity-pruned.
+    S3_KEY_CREATED = "s3_key.created"
+    S3_KEY_REVOKED = "s3_key.revoked"
+
     # --- administration -----------------------------------------------
     QUOTA_CHANGED = "admin.quota_changed"
     CACHE_PURGED = "admin.cache_purged"

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +41,7 @@ from cyberfs.adapters.inbound.api.routers import admin as admin_router
 from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import me as me_router
 from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
+from cyberfs.adapters.inbound.api.routers import s3_keys as s3_keys_router
 from cyberfs.adapters.inbound.api.routers import shares as shares_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.activity import ActivityService
@@ -47,6 +49,9 @@ from cyberfs.application.admin import AdminService
 from cyberfs.application.health import HealthService
 from cyberfs.application.jobs import ActivityPruneJob
 from cyberfs.application.nodes import NodeService
+from cyberfs.application.s3_auth import S3SignatureVerifier
+from cyberfs.application.s3_keys import S3AccessKeyService
+from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
 from cyberfs.infrastructure.settings import Environment, Settings, get_settings
@@ -166,6 +171,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page_size_max=settings.page_size_max,
     )
     app.state.activity_prune_job = ActivityPruneJob(settings)
+    app.state.s3_keys = S3AccessKeyService(keys=app.state.keys)
+    # Signature verification lands now (phase 4); the S3 HTTP surface that
+    # feeds it a parsed request mounts in a later phase.
+    app.state.s3_authenticator = S3SignatureVerifier(
+        keys=app.state.keys,
+        failure_limiter=FixedWindowLimiter(
+            limit=settings.ratelimit_auth_failures_per_min,
+            window=timedelta(minutes=1),
+        ),
+        region=settings.s3_region,
+        clock_skew_seconds=settings.s3_clock_skew_seconds,
+    )
     _wire_backup(app, settings)
     app.state.sharing = build_sharing(
         settings, app.state.http, app.state.encryption, app.state.cache
@@ -194,6 +211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(content_router.router)
     app.include_router(shares_router.router)
     app.include_router(me_router.router)
+    app.include_router(s3_keys_router.router)
     app.include_router(admin_router.router)
     if settings.metrics_enabled:
         app.include_router(metrics.router)

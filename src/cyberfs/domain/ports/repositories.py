@@ -19,6 +19,7 @@ from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
+from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.stats import TenantStatistics, UserStorage
 from cyberfs.domain.users import QuotaUsage, User
@@ -150,6 +151,28 @@ class KeyRepository(Protocol):
     async def delete_data_keys_for_node(self, node_id: uuid.UUID) -> int: ...
 
 
+class S3AccessKeyRepository(Protocol):
+    """Access-key credentials, looked up by id on the signing hot path.
+
+    There is deliberately no query returning the sealed secret in bulk: a
+    listing is by owner, and only the single `get_by_key_id` on the verifier's
+    path ever reads the sealed material.
+    """
+
+    async def get_by_key_id(self, key_id: str) -> S3AccessKey | None: ...
+    async def add(self, key: S3AccessKey) -> None: ...
+
+    async def list_for_subject(self, owner_subject: str) -> tuple[S3AccessKey, ...]:
+        """Every key a subject owns -- for the management surface and rotation.
+        Newest first, so the freshest credential heads the list."""
+        ...
+
+    async def update(self, key: S3AccessKey) -> None:
+        """Persist a revocation or a last-used stamp. Both are timestamp writes
+        on an existing row."""
+        ...
+
+
 class QuotaRepository(Protocol):
     async def get(self, user_id: uuid.UUID) -> QuotaUsage | None: ...
     async def add(self, usage: QuotaUsage) -> None: ...
@@ -249,6 +272,7 @@ class UnitOfWork(Protocol):
     grants: GrantRepository
     public_links: PublicLinkRepository
     keys: KeyRepository
+    s3_keys: S3AccessKeyRepository
     quotas: QuotaRepository
     audit: AuditRepository
     #: Read-only aggregates for the admin surface. Sums and counts only --

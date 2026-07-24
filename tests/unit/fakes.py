@@ -25,6 +25,7 @@ from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
+from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -187,6 +188,24 @@ class FakeKeyRepository:
         for key in doomed:
             del self.data_keys[key]
         return len(doomed)
+
+
+class FakeS3AccessKeyRepository:
+    def __init__(self) -> None:
+        self.by_key_id: dict[str, S3AccessKey] = {}
+
+    async def get_by_key_id(self, key_id: str) -> S3AccessKey | None:
+        return self.by_key_id.get(key_id)
+
+    async def add(self, key: S3AccessKey) -> None:
+        self.by_key_id[key.key_id] = key
+
+    async def list_for_subject(self, owner_subject: str) -> tuple[S3AccessKey, ...]:
+        owned = [k for k in self.by_key_id.values() if k.owner_subject == owner_subject]
+        return tuple(sorted(owned, key=lambda k: k.created_at, reverse=True))
+
+    async def update(self, key: S3AccessKey) -> None:
+        self.by_key_id[key.key_id] = key
 
 
 class FakeFileVersionRepository:
@@ -431,6 +450,7 @@ class FakeUnitOfWork:
         self.grants = FakeGrantRepository()
         self.public_links = FakePublicLinkRepository()
         self.keys = FakeKeyRepository()
+        self.s3_keys = FakeS3AccessKeyRepository()
         self.quotas = FakeQuotaRepository(self.nodes)
         self.audit = FakeAuditRepository()
         self.activity = FakeActivityQueries(self.audit, self.nodes, self.users)
@@ -488,6 +508,15 @@ class FakeKeyProvider:
 
     def unwrap_kek(self, wrapped: bytes, *, master_key_id: str) -> bytes:
         return wrapped.removeprefix(b"wrapped:")
+
+    def seal_secret(self, data: bytes) -> bytes:
+        # Reversible transform, not encryption -- enough to prove that only
+        # sealed material is ever persisted, without pulling real AEAD into a
+        # unit test. The sealed form is deliberately unequal to the plaintext.
+        return b"sealed:" + data
+
+    def unseal_secret(self, sealed: bytes, *, master_key_id: str) -> bytes:
+        return sealed.removeprefix(b"sealed:")
 
 
 class FakeObjectStore:

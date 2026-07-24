@@ -28,6 +28,9 @@ KEK_ASSOCIATED_DATA = b"cyberfs/kek/v1"
 #: The layer below. Distinct associated data means a sealed DEK can never
 #: be replayed where a sealed KEK is expected, or the reverse.
 DEK_ASSOCIATED_DATA = b"cyberfs/dek/v1"
+#: S3 access-key secrets. Distinct again, so a sealed secret can never be
+#: replayed where a sealed KEK or DEK is expected.
+S3_SECRET_ASSOCIATED_DATA = b"cyberfs/s3-secret/v1"
 
 
 def master_key_id(key: bytes) -> str:
@@ -101,6 +104,26 @@ class MasterKeyProvider:
             return AESGCM(kek).decrypt(nonce, sealed, DEK_ASSOCIATED_DATA)
         except InvalidTag as exc:
             raise KeyUnavailableError("wrapped data key failed authentication") from exc
+
+    # --- s3 access-key secrets -----------------------------------------
+
+    def seal_secret(self, data: bytes) -> bytes:
+        """Seal an arbitrary-length secret under the current master key.
+
+        Unlike `wrap_kek`, this accepts any length, so it can hold an S3
+        access-key secret. The nonce is prepended, as everywhere else.
+        """
+        nonce = os.urandom(NONCE_BYTES)
+        sealed = AESGCM(self._current).encrypt(nonce, data, S3_SECRET_ASSOCIATED_DATA)
+        return nonce + sealed
+
+    def unseal_secret(self, sealed: bytes, *, master_key_id: str) -> bytes:
+        key = self._key_for(master_key_id)
+        nonce, ciphertext = sealed[:NONCE_BYTES], sealed[NONCE_BYTES:]
+        try:
+            return AESGCM(key).decrypt(nonce, ciphertext, S3_SECRET_ASSOCIATED_DATA)
+        except InvalidTag as exc:
+            raise KeyUnavailableError("sealed secret failed authentication") from exc
 
     def _key_for(self, key_id: str) -> bytes:
         if key_id == self._current_id:

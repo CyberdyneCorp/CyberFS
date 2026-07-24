@@ -45,6 +45,20 @@ class KeyProvider(Protocol):
 
     def unwrap_dek(self, wrapped: bytes, kek: bytes) -> bytes: ...
 
+    def seal_secret(self, data: bytes) -> bytes:
+        """Seal an arbitrary-length secret under the current master key.
+
+        Distinct from `wrap_kek`, which is fixed at 32 bytes and so cannot hold
+        an S3 access-key secret. Used to store the secret recoverably only with
+        the master key -- never in the clear, never in the database alone.
+        """
+        ...
+
+    def unseal_secret(self, sealed: bytes, *, master_key_id: str) -> bytes:
+        """Recover a secret sealed by `seal_secret`, using whichever master key
+        sealed it so both are accepted while a rotation is in flight."""
+        ...
+
 
 class ContentCipher(Protocol):
     """Seals and opens file content in authenticated frames."""

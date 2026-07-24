@@ -35,6 +35,7 @@ from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
+from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -289,6 +290,37 @@ class SqlKeyRepository:
             ),
         )
         return int(result.rowcount or 0)
+
+
+class SqlS3AccessKeyRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_key_id(self, key_id: str) -> S3AccessKey | None:
+        result = await self._session.execute(
+            select(m.S3AccessKeyRow).where(m.S3AccessKeyRow.key_id == key_id)
+        )
+        row = result.scalar_one_or_none()
+        return mappers.s3_access_key_from_row(row) if row else None
+
+    async def add(self, key: S3AccessKey) -> None:
+        self._session.add(mappers.s3_access_key_to_row(key))
+
+    async def list_for_subject(self, owner_subject: str) -> tuple[S3AccessKey, ...]:
+        result = await self._session.execute(
+            select(m.S3AccessKeyRow)
+            .where(m.S3AccessKeyRow.owner_subject == owner_subject)
+            .order_by(m.S3AccessKeyRow.created_at.desc())
+        )
+        return tuple(mappers.s3_access_key_from_row(r) for r in result.scalars())
+
+    async def update(self, key: S3AccessKey) -> None:
+        result = await self._session.execute(
+            select(m.S3AccessKeyRow).where(m.S3AccessKeyRow.key_id == key.key_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            mappers.apply_s3_access_key(row, key)
 
 
 class SqlQuotaRepository:

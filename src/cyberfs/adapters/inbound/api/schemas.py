@@ -18,6 +18,7 @@ from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.backup import BackupRecord, is_stale
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
+from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink
 from cyberfs.domain.stats import JobStatus, TenantStatistics, UserStorage
 
@@ -245,6 +246,50 @@ class LinkList(BaseModel):
     @classmethod
     def of(cls, links: tuple[PublicLink, ...]) -> LinkList:
         return cls(items=[LinkSummary.of(link) for link in links])
+
+
+class CreateS3KeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(default="", max_length=MAX_NAME_LENGTH)
+
+
+class S3KeySummary(BaseModel):
+    """An access key as its owner sees it. The secret is never a field here."""
+
+    access_key_id: str
+    label: str
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked: bool
+
+    @classmethod
+    def of(cls, key: S3AccessKey) -> S3KeySummary:
+        return cls(
+            access_key_id=key.key_id,
+            label=key.label,
+            created_at=key.created_at,
+            last_used_at=key.last_used_at,
+            revoked=not key.is_active,
+        )
+
+
+class IssuedS3KeyResponse(S3KeySummary):
+    """Returned once, at creation. The secret is not recoverable afterwards."""
+
+    secret_access_key: str
+
+    @classmethod
+    def of_issued(cls, key: S3AccessKey, secret: str) -> IssuedS3KeyResponse:
+        return cls(**S3KeySummary.of(key).model_dump(), secret_access_key=secret)
+
+
+class S3KeyList(BaseModel):
+    items: list[S3KeySummary]
+
+    @classmethod
+    def of(cls, keys: tuple[S3AccessKey, ...]) -> S3KeyList:
+        return cls(items=[S3KeySummary.of(key) for key in keys])
 
 
 class TransferRequest(BaseModel):

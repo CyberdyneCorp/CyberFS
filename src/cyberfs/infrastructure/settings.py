@@ -142,6 +142,16 @@ class Settings(BaseSettings):
     # is refused with 422 rather than scanning an unbounded range.
     activity_max_window_days: PositiveInt = 90
 
+    # --- s3 compatibility ----------------------------------------------
+    # The AWS region a SigV4 credential scope must name. S3 clients sign with a
+    # region and CyberFS reproduces the same canonical request to verify, so
+    # this is part of the signing contract rather than a routing hint.
+    s3_region: str = "us-east-1"
+    # How far a signed `x-amz-date` may sit from the server clock before the
+    # request is refused with `RequestTimeTooSkewed`. Bounds replay of a
+    # captured signature to this window.
+    s3_clock_skew_seconds: NonNegativeInt = 300
+
     # --- backup --------------------------------------------------------
     backup_enabled: bool = False
     backup_cron: str = "0 3 * * *"

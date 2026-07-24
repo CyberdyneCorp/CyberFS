@@ -112,7 +112,9 @@ confer any permission its owner does not already hold.
 
 - **WHEN** a user creates an access key
 - **THEN** the system SHALL return the access-key id and the secret exactly once,
-  and SHALL store only a verifier from which the secret cannot be recovered
+  and SHALL never persist the secret in cleartext -- sealing it under the
+  deployment `MASTER_KEY` held outside the database, so a database leak alone
+  recovers nothing
 
 #### Scenario: The secret is never shown again
 

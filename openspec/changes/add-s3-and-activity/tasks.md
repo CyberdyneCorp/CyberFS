@@ -26,26 +26,26 @@
 
 ## 3. S3 access keys
 
-- [ ] 3.1 Add the `S3AccessKey` entity and repository port: key id, verifier, label, owner, created, last used, revoked
-- [ ] 3.2 Write the SQLAlchemy model and migration, with a unique index on the key id and an index on the owner
-- [ ] 3.3 Implement minting: generate a key id and a high-entropy secret, store only an irreversible verifier, return the secret exactly once
-- [ ] 3.4 Implement listing (never returning the secret) and revocation with immediate effect
-- [ ] 3.5 Refuse minting to service principals
-- [ ] 3.6 Record last-used on every authenticated request, so unused credentials can be retired
-- [ ] 3.7 Expose `POST`/`GET`/`DELETE` under `/api/v1/me/s3-keys`
-- [ ] 3.8 Unit tests: the secret is unrecoverable, appears in no response after creation, revocation is immediate, and multiple keys coexist for rotation
+- [x] 3.1 Add the `S3AccessKey` entity and repository port: key id, verifier, label, owner, created, last used, revoked
+- [x] 3.2 Write the SQLAlchemy model and migration, with a unique index on the key id and an index on the owner
+- [x] 3.3 Implement minting: generate a key id and a high-entropy secret; never store the secret in cleartext -- SigV4 must reproduce it, so seal it under the deployment `MASTER_KEY` (held outside the database), leaving a database leak alone unable to reveal anything; return the secret exactly once
+- [x] 3.4 Implement listing (never returning the secret) and revocation with immediate effect
+- [x] 3.5 Refuse minting to service principals
+- [x] 3.6 Record last-used on every authenticated request, so unused credentials can be retired
+- [x] 3.7 Expose `POST`/`GET`/`DELETE` under `/api/v1/me/s3-keys`
+- [x] 3.8 Unit tests: the secret is never persisted in cleartext (only sealed), appears in no response after creation, revocation is immediate, and multiple keys coexist for rotation
 
 ## 4. Signature V4 verification
 
-- [ ] 4.1 Implement canonical request construction (method, URI, query, headers, signed-headers, payload hash) as a pure function
-- [ ] 4.2 Implement the string-to-sign and signing-key derivation as pure functions
-- [ ] 4.3 Verify against AWS's own documented SigV4 test vectors, so correctness is measured against the published algorithm rather than our reading of it
-- [ ] 4.4 Compare signatures in constant time
-- [ ] 4.5 Enforce `S3_CLOCK_SKEW_SECONDS`, rejecting a stale request with `RequestTimeTooSkewed`
-- [ ] 4.6 Verify `x-amz-content-sha256` against the received body, so a signature cannot be replayed over altered content
-- [ ] 4.7 Make an unknown access key and a bad signature indistinguishable by timing
-- [ ] 4.8 Rate limit repeated signature failures per source IP, reusing the existing limiter
-- [ ] 4.9 Unit tests for every scenario in `s3-compatibility/spec.md`'s signature requirements, including malformed and truncated headers
+- [x] 4.1 Implement canonical request construction (method, URI, query, headers, signed-headers, payload hash) as a pure function
+- [x] 4.2 Implement the string-to-sign and signing-key derivation as pure functions
+- [x] 4.3 Verify against AWS's own documented SigV4 test vectors, so correctness is measured against the published algorithm rather than our reading of it
+- [x] 4.4 Compare signatures in constant time
+- [x] 4.5 Enforce `S3_CLOCK_SKEW_SECONDS`, rejecting a stale request with `RequestTimeTooSkewed`
+- [x] 4.6 Verify `x-amz-content-sha256` against the received body, so a signature cannot be replayed over altered content
+- [x] 4.7 Make an unknown access key and a bad signature indistinguishable by timing
+- [x] 4.8 Rate limit repeated signature failures per source IP, reusing the existing limiter
+- [x] 4.9 Unit tests for every scenario in `s3-compatibility/spec.md`'s signature requirements, including malformed and truncated headers
 
 ## 5. S3 authentication and namespace
 

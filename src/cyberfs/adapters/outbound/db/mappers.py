@@ -14,6 +14,7 @@ from cyberfs.domain.auth.principal import Org
 from cyberfs.domain.backup import BackupRecord, BackupState
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
+from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -239,6 +240,43 @@ def data_key_from_row(row: m.WrappedDataKeyRow) -> WrappedDataKey:
         subject=row.subject,
         wrapped_dek=row.wrapped_dek,
         created_at=row.created_at,
+    )
+
+
+# --- s3 access keys --------------------------------------------------------
+
+
+def s3_access_key_to_row(key: S3AccessKey) -> m.S3AccessKeyRow:
+    return m.S3AccessKeyRow(
+        key_id=key.key_id,
+        sealed_secret=key.sealed_secret,
+        secret_master_key_id=key.secret_master_key_id,
+        label=key.label,
+        user_id=key.owner_id,
+        owner_subject=key.owner_subject,
+        created_at=key.created_at,
+        last_used_at=key.last_used_at,
+        revoked_at=key.revoked_at,
+    )
+
+
+def apply_s3_access_key(row: m.S3AccessKeyRow, key: S3AccessKey) -> None:
+    # Only the mutable lifecycle timestamps change after creation.
+    row.last_used_at = key.last_used_at
+    row.revoked_at = key.revoked_at
+
+
+def s3_access_key_from_row(row: m.S3AccessKeyRow) -> S3AccessKey:
+    return S3AccessKey(
+        key_id=row.key_id,
+        sealed_secret=row.sealed_secret,
+        secret_master_key_id=row.secret_master_key_id,
+        label=row.label,
+        owner_id=row.user_id,
+        owner_subject=row.owner_subject,
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        revoked_at=row.revoked_at,
     )
 
 

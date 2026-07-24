@@ -24,6 +24,7 @@ from cyberfs.adapters.outbound.db.repositories import (
     SqlNodeRepository,
     SqlPublicLinkRepository,
     SqlQuotaRepository,
+    SqlS3AccessKeyRepository,
     SqlUserRepository,
 )
 from cyberfs.domain.errors import ConflictError, CyberFSError, NameTakenError
@@ -72,6 +73,7 @@ class SqlUnitOfWork:
         self.versions = SqlFileVersionRepository(session)
         self.grants = SqlGrantRepository(session)
         self.keys = SqlKeyRepository(session)
+        self.s3_keys = SqlS3AccessKeyRepository(session)
         self.public_links = SqlPublicLinkRepository(session)
         self.quotas = SqlQuotaRepository(session)
         self.audit = SqlAuditRepository(session)
