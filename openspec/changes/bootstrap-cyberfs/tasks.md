@@ -1,14 +1,14 @@
 ## 1. Foundations
 
-- [ ] 1.1 Scaffold the repository: `pyproject.toml` (Python 3.12, `uv`), `justfile` mirroring CyberdyneAuth recipes (`install`, `dev`, `test`, `test-unit`, `test-integration`, `test-cov`, `lint`, `typecheck`, `check`, `ci`), `.gitignore`, `.pre-commit-config.yaml`
-- [ ] 1.2 Create the hexagonal package layout `src/cyberfs/{domain,application,adapters/inbound/api,adapters/outbound,infrastructure}` with `__init__.py` and a layering guard test that fails if `domain` or `application` imports FastAPI, SQLAlchemy, redis, or minio
-- [ ] 1.3 Implement `infrastructure/settings.py` with Pydantic Settings covering every env var named in the specs; fail startup on missing required values, on the development `MASTER_KEY` placeholder in production, and on a `MASTER_KEY` that is not a valid 256-bit key
-- [ ] 1.4 Write `.env.example` covering every setting, and a test asserting it stays in sync with the settings model
-- [ ] 1.5 Set up structured JSON logging with `X-Request-ID` propagation and a redaction filter for secrets, tokens, and key material
-- [ ] 1.6 Add the FastAPI app factory, error-handler middleware mapping domain errors to RFC 7807 responses, and the `/health/live` + `/health/ready` endpoints (liveness independent of dependencies; readiness reflecting Postgres, MinIO, auth, and a `degraded` cache state)
-- [ ] 1.7 Add Prometheus metrics with the counters and histograms named in `deployment/spec.md`, restricted to the internal network
-- [ ] 1.8 Wire `.github/workflows/ci.yml`: `ruff`, `mypy --strict`, unit tests with `fail_under` above 90 on `domain`+`application`, integration tests on service containers, and `openspec validate --all --strict`
-- [ ] 1.9 Configure coverage in `pyproject.toml`, explicitly listing the integration-only modules excluded from the denominator with a comment justifying each
+- [x] 1.1 Scaffold the repository: `pyproject.toml` (Python 3.12, `uv`), `justfile` mirroring CyberdyneAuth recipes (`install`, `dev`, `test`, `test-unit`, `test-integration`, `test-cov`, `lint`, `typecheck`, `check`, `ci`), `.gitignore`, `.pre-commit-config.yaml`
+- [x] 1.2 Create the hexagonal package layout `src/cyberfs/{domain,application,adapters/inbound/api,adapters/outbound,infrastructure}` with `__init__.py` and a layering guard test that fails if `domain` or `application` imports FastAPI, SQLAlchemy, redis, or minio
+- [x] 1.3 Implement `infrastructure/settings.py` with Pydantic Settings covering every env var named in the specs; fail startup on missing required values, on the development `MASTER_KEY` placeholder in production, and on a `MASTER_KEY` that is not a valid 256-bit key
+- [x] 1.4 Write `.env.example` covering every setting, and a test asserting it stays in sync with the settings model
+- [x] 1.5 Set up structured JSON logging with `X-Request-ID` propagation and a redaction filter for secrets, tokens, and key material
+- [x] 1.6 Add the FastAPI app factory, error-handler middleware mapping domain errors to RFC 7807 responses, and the `/health/live` + `/health/ready` endpoints (liveness independent of dependencies; readiness reflecting Postgres, MinIO, auth, and a `degraded` cache state)
+- [x] 1.7 Add Prometheus metrics with the counters and histograms named in `deployment/spec.md`, restricted to the internal network
+- [x] 1.8 Wire `.github/workflows/ci.yml`: `ruff`, `mypy --strict`, unit tests with `fail_under` above 90 on `domain`+`application`, integration tests on service containers, and `openspec validate --all --strict`
+- [x] 1.9 Configure coverage in `pyproject.toml`, explicitly listing the integration-only modules excluded from the denominator with a comment justifying each
 
 ## 2. Authentication (CyberdyneAuth resource server)
 

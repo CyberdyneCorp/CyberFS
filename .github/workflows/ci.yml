@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  UV_VERSION: "0.9.17"
+
+jobs:
+  quality:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Typecheck
+        run: uv run mypy
+
+      # Coverage floor (>90% on domain/ and application/) is enforced by
+      # [tool.coverage.report].fail_under in pyproject.toml.
+      - name: Unit tests with coverage floor
+        run: uv run pytest tests/unit --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cyberfs
+          POSTGRES_PASSWORD: cyberfs
+          POSTGRES_DB: cyberfs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cyberfs"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: cyberfs
+          MINIO_ROOT_PASSWORD: cyberfs-dev-secret
+          MINIO_DEFAULT_BUCKETS: cyberfs-content
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://cyberfs:cyberfs@localhost:5432/cyberfs
+      REDIS_URL: redis://localhost:6379/0
+      MINIO_ENDPOINT: localhost:9000
+      MINIO_ACCESS_KEY: cyberfs
+      MINIO_SECRET_KEY: cyberfs-dev-secret
+      MINIO_BUCKET: cyberfs-content
+      MINIO_SECURE: "false"
+      CYBERDYNE_AUTH_BASE_URL: https://auth.example.test
+      CYBERFS_CLIENT_ID: cyberfs
+      CYBERFS_CLIENT_SECRET: ci-client-secret
+      MASTER_KEY: ZGV2LW9ubHktbWFzdGVyLWtleS1kby1ub3QtdXNlISE=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      # Migrations arrive with the data model (tasks 3.4). Until then this job
+      # has nothing to run; the guard lifts itself as soon as alembic.ini lands
+      # rather than needing a workflow edit.
+      - name: Detect migrations
+        id: detect
+        run: echo "ready=${{ hashFiles('alembic.ini') != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run migrations
+        if: steps.detect.outputs.ready == 'true'
+        run: uv run alembic upgrade head
+
+      # Includes the backup/restore round trip -- `backup-restore/spec.md`
+      # requires the restore to be exercised in CI, not merely documented.
+      - name: Integration tests
+        if: steps.detect.outputs.ready == 'true'
+        run: uv run pytest tests/integration -m integration
+
+  openspec:
+    name: OpenSpec validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g @fission-ai/openspec@latest
+      - run: openspec validate --all --strict
