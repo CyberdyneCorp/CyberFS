@@ -101,11 +101,11 @@
 
 ## 10. Observability and close-out
 
-- [ ] 10.1 Label request metrics by protocol so S3 and REST traffic can be told apart
-- [ ] 10.2 Add metrics for signature failures, access-key authentications, and multipart uploads in flight
-- [ ] 10.3 Assert no log line carries an access-key secret, a signature, or object content
-- [ ] 10.4 Write `docs/s3-api.md`: endpoint, credentials, the bucket and key mapping, the reserved prefix, what is deliberately unsupported and why
-- [ ] 10.5 Write `docs/activity.md`: what is recorded, retention, and the privacy boundary
-- [ ] 10.6 Update the `bootstrap-cyberfs` design non-goals to record that S3 is now in scope while WebDAV and FUSE remain out
-- [ ] 10.7 Resolve this change's open questions — key expiry, anonymous presigned reads, retention numbers, download-record granularity, and bucket naming — recording the decisions
-- [ ] 10.8 Run `openspec validate --all --strict` and the full `just ci` gate, then archive the change
+- [x] 10.1 Label request metrics by protocol so S3 and REST traffic can be told apart
+- [x] 10.2 Add metrics for signature failures, access-key authentications, and multipart uploads in flight
+- [x] 10.3 Assert no log line carries an access-key secret, a signature, or object content
+- [x] 10.4 Write `docs/s3-api.md`: endpoint, credentials, the bucket and key mapping, the reserved prefix, what is deliberately unsupported and why
+- [x] 10.5 Write `docs/activity.md`: what is recorded, retention, and the privacy boundary
+- [x] 10.6 Update the `bootstrap-cyberfs` design non-goals to record that S3 is now in scope while WebDAV and FUSE remain out
+- [x] 10.7 Resolve this change's open questions — key expiry, anonymous presigned reads, retention numbers, download-record granularity, and bucket naming — recording the decisions
+- [ ] 10.8 Run `openspec validate --all --strict` and the full `just ci` gate, then archive the change <!-- Gate passes (validate --all --strict + just ci: ruff, mypy --strict, 1210 unit tests @ 95.56%). Archive held: this change's MODIFIED file-storage/authentication deltas sit on bootstrap's specs, which cannot archive until bootstrap 12.8 (live staging drill) is done by an operator. -->

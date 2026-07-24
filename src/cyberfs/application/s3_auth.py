@@ -47,6 +47,10 @@ from cyberfs.domain.s3.authorization import AuthorizationHeader, parse_authoriza
 from cyberfs.domain.s3.presigned import PresignedQuery, parse_presigned_query
 from cyberfs.domain.s3.request import S3Request
 from cyberfs.infrastructure.logging import get_logger
+from cyberfs.infrastructure.metrics import (
+    s3_key_authentications_total,
+    s3_signature_failures_total,
+)
 
 logger = get_logger(__name__)
 
@@ -124,6 +128,7 @@ class S3SignatureVerifier:
             raise SignatureMismatchError("request signature does not match")
 
         await uow.s3_keys.update(key.with_last_used(now))
+        s3_key_authentications_total.labels(form="header").inc()
         logger.info("s3_request_authenticated", key_id=key.key_id, subject=key.owner_subject)
         return key
 
@@ -151,6 +156,7 @@ class S3SignatureVerifier:
             raise SignatureMismatchError("request signature does not match")
 
         await uow.s3_keys.update(key.with_last_used(now))
+        s3_key_authentications_total.labels(form="presigned").inc()
         logger.info("s3_presigned_authenticated", key_id=key.key_id, subject=key.owner_subject)
         return key
 
@@ -226,6 +232,7 @@ class S3SignatureVerifier:
     async def _record_failure(
         self, uow: UnitOfWork, request: S3Request, now: datetime, exc: S3RequestError
     ) -> None:
+        s3_signature_failures_total.labels(reason=exc.code).inc()
         if request.source_ip is not None:
             self._limiter.record(request.source_ip, now)
         await uow.audit.add(

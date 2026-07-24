@@ -34,8 +34,11 @@ Constraints fixed before design began:
   `add-s3-and-activity` change reverses this for an S3-compatible surface, on the
   grounds that the permission and encryption model this change exists to
   establish is now built and tested, and the cost of having no interface that
-  existing tooling speaks is paid by every consuming team. WebDAV and FUSE
-  remain out of scope.
+  existing tooling speaks is paid by every consuming team. That surface is now
+  delivered: SigV4- and bearer-authenticated S3 endpoints, mounted behind
+  `S3_API_ENABLED`, reusing the same use cases as REST (see `docs/s3-api.md`).
+  WebDAV and FUSE remain out of scope, because neither is what tooling actually
+  speaks.
 - Cross-organisation federation or multi-region replication.
 - Serving as a CDN. Content always transits the API; deployments that need edge caching should front CyberFS with one.
 - Virus scanning, DLP, and content classification.

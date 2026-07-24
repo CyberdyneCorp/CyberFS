@@ -20,7 +20,7 @@ from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore, StoredObject
 from cyberfs.infrastructure.logging import get_logger
-from cyberfs.infrastructure.metrics import job_runs_total
+from cyberfs.infrastructure.metrics import job_runs_total, s3_multipart_uploads_in_flight
 from cyberfs.infrastructure.settings import Settings
 
 logger = get_logger(__name__)
@@ -181,6 +181,9 @@ class OrphanReaper:
                 await self._objects.delete(part.object_key)
                 reclaimed_bytes += part.size
             await uow.multipart.delete(upload.upload_id)
+            # This upload never completed or aborted, so its create-time increment
+            # is still outstanding; the reap is the third and final way out.
+            s3_multipart_uploads_in_flight.dec()
         return len(abandoned), reclaimed_bytes
 
     @staticmethod

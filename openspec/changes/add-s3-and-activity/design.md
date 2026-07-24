@@ -241,19 +241,51 @@ storage format of its own. Access keys become inert. Activity recording is
 independent and would be rolled back only by ceasing to write the new record
 types, which no other capability depends on.
 
-## Open Questions
+## Resolved Questions
 
-- **Key expiry.** Should access keys support an optional expiry, or is manual
-  revocation sufficient? Expiry is the stronger default but adds a renewal
-  burden on unattended clients, which is the main use case.
-- **Anonymous presigned reads.** A presigned URL currently requires a key to
-  sign it. Should a public link be expressible as one, so a recipient can use S3
-  tooling? It would unify two sharing mechanisms but widens the unauthenticated
-  surface.
-- **Retention numbers.** `ACTIVITY_RETENTION_DAYS` and
-  `ACTIVITY_MAX_WINDOW_DAYS` need product sign-off, not an engineering guess.
-- **Download-record granularity.** Should a ranged read count as a download, or
-  only a completed full read? A video player issuing hundreds of range requests
-  would otherwise dominate a user's activity.
-- **Bucket naming.** Subjects are UUIDs, which are valid but unfriendly bucket
-  names. Should an alias be supported, and if so, what guarantees uniqueness?
+Each of these was open when design began; the entry records what shipped and why.
+
+- **Key expiry — resolved: manual revocation only, no optional expiry.**
+  `S3AccessKey` carries `created_at`, `last_used_at`, and `revoked_at`, and no
+  expiry field (`domain/s3/access_key.py`). `is_active` is simply
+  `revoked_at is None`. Revocation takes effect on the very next signed request
+  with no cache to expire, multiple keys coexist so rotation needs no outage, and
+  last-used is stamped on every authenticated request so an unused key can be
+  found and retired. Expiry would have added a renewal burden on exactly the
+  unattended clients that are the main use case, with no gain over immediate
+  revocation, so it was not built.
+
+- **Anonymous presigned reads — resolved: no; a presigned URL always requires a
+  key to sign it.** `S3PresignService.presign` takes an `S3AccessKey` and roots
+  the URL at CyberFS's own endpoint (`application/s3_presign.py`); there is no
+  keyless form. A URL stops working the instant its signing key is revoked.
+  Anonymous S3 access stays a non-goal, and public sharing stays the existing
+  public-link mechanism — unifying the two would have widened the unauthenticated
+  surface for a convenience the public link already covers.
+
+- **Retention numbers — resolved: 90 days each.** `ACTIVITY_RETENTION_DAYS`
+  defaults to `90` and `ACTIVITY_MAX_WINDOW_DAYS` to `90`
+  (`infrastructure/settings.py`); both are environment-overridable. Activity
+  records are pruned at the retention horizon by the prune job, while security
+  records (denials, grants, transfers, encryption changes, admin actions) are
+  retained separately and never pruned there. The window cap refuses a query
+  asking for more than the maximum with `422` rather than scanning an unbounded
+  range.
+
+- **Download-record granularity — resolved: a ranged read counts as a download,
+  recording the bytes actually served.** `ContentService.download` records one
+  `FILE_DOWNLOADED` audit record per read, carrying `served` — `wanted.length`
+  for a range, the full size otherwise — not the object size
+  (`application/content.py`). There is no coalescing of a burst of range reads:
+  the audit's value is that it reflects what was actually served, and correlating
+  many ranges into one logical download would demand exactly the cross-request
+  state the immutable audit table avoids. The sharper activity retention and the
+  prune job, not deduplication, bound the volume a range-heavy client produces.
+
+- **Bucket naming — resolved: the bucket is exactly the subject, 1:1, no alias.**
+  `bucket_for_subject` returns the subject unchanged and `subject_for_bucket` is
+  its inverse (`domain/s3/namespace.py`). Subjects are UUIDs, so bucket names are
+  unfriendly but unambiguous, invertible, and collision-free, and a foreign
+  bucket answers `NoSuchBucket` identically to a name that never existed — so a
+  bucket name is never a probe for who exists. An alias would have needed a
+  uniqueness authority and reintroduced that enumeration risk, so none was added.

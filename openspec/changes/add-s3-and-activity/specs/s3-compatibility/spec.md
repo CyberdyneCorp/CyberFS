@@ -360,6 +360,13 @@ equivalents, distinguished by the protocol used.
 - **THEN** request counts SHALL be labelled by protocol, so S3 and REST traffic
   can be told apart
 
+#### Scenario: S3-specific instruments are exposed
+
+- **WHEN** metrics are scraped
+- **THEN** the system SHALL expose a counter of signature verification failures,
+  a counter of access-key authentications, and a gauge of multipart uploads in
+  flight, the gauge rising on create and falling on completion, abort, and reap
+
 #### Scenario: Signature failures are rate limited
 
 - **WHEN** a source IP accumulates repeated signature failures

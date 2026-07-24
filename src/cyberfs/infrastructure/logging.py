@@ -35,6 +35,15 @@ SENSITIVE_KEYS = frozenset(
         "client_secret",
         "master_key",
         "master_key_previous",
+        # SigV4 material: the signature itself, and the access-key secret it is
+        # derived from, however they are named. A signature in an `authorization`
+        # header is already covered above; these catch a stray structured field.
+        "signature",
+        "amz_signature",
+        "x-amz-signature",
+        "access_key_secret",
+        "secret_access_key",
+        "s3_secret",
         "kek",
         "dek",
         "data_key",

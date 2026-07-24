@@ -62,6 +62,7 @@ from cyberfs.domain.s3.namespace import (
     subject_for_bucket,
 )
 from cyberfs.domain.users import User
+from cyberfs.infrastructure.metrics import s3_multipart_uploads_in_flight
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 
@@ -253,6 +254,7 @@ class S3ObjectService:
                 created_at=now or utcnow(),
             )
         )
+        s3_multipart_uploads_in_flight.inc()
         return upload_id
 
     async def upload_part(
@@ -341,10 +343,16 @@ class S3ObjectService:
     async def _discard_upload(
         self, uow: UnitOfWork, upload_id: str, parts: Sequence[MultipartPart]
     ) -> None:
-        """Delete every staged part object and the upload's metadata rows."""
+        """Delete every staged part object and the upload's metadata rows.
+
+        The shared tail of `complete_multipart_upload` and `abort_multipart_upload`,
+        so the in-flight gauge is decremented here once either resolves an upload
+        the reaper (which deletes rows directly) never sees.
+        """
         for part in parts:
             await self._objects.delete(part.object_key)
         await uow.multipart.delete(upload_id)
+        s3_multipart_uploads_in_flight.dec()
 
     async def _require_upload(self, uow: UnitOfWork, user: User, upload_id: str) -> MultipartUpload:
         """Load an upload the caller owns, or raise `NoSuchUpload`."""

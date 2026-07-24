@@ -27,15 +27,15 @@ BYTE_BUCKETS = (
 
 http_requests_total = Counter(
     "cyberfs_http_requests_total",
-    "HTTP requests by route and status.",
-    labelnames=("method", "route", "status"),
+    "HTTP requests by route, protocol (rest|s3), and status.",
+    labelnames=("method", "route", "protocol", "status"),
     registry=REGISTRY,
 )
 
 http_request_duration_seconds = Histogram(
     "cyberfs_http_request_duration_seconds",
-    "HTTP request latency by route.",
-    labelnames=("method", "route"),
+    "HTTP request latency by route and protocol (rest|s3).",
+    labelnames=("method", "route", "protocol"),
     registry=REGISTRY,
 )
 
@@ -94,6 +94,32 @@ quota_rejections_total = Counter(
     "Uploads refused because they would exceed the owner's quota.",
     registry=REGISTRY,
 )
+
+# --- S3 surface ------------------------------------------------------------
+
+s3_signature_failures_total = Counter(
+    "cyberfs_s3_signature_failures_total",
+    "SigV4 verification failures on the S3 surface, by reason (the same code the "
+    "audit record carries: signature_mismatch, unknown_access_key, request_skewed, "
+    "content_hash_mismatch, ...).",
+    labelnames=("reason",),
+    registry=REGISTRY,
+)
+
+s3_key_authentications_total = Counter(
+    "cyberfs_s3_key_authentications_total",
+    "Requests authenticated by a CyberFS access key (SigV4), by credential form "
+    "(header signature or presigned query).",
+    labelnames=("form",),
+    registry=REGISTRY,
+)
+
+s3_multipart_uploads_in_flight = Gauge(
+    "cyberfs_s3_multipart_uploads_in_flight",
+    "Multipart uploads begun but not yet completed, aborted, or reaped.",
+    registry=REGISTRY,
+)
+
 
 # --- background jobs -------------------------------------------------------
 

@@ -28,6 +28,18 @@ def route_label(request: Request) -> str:
     return str(path) if path else "unmatched"
 
 
+def protocol_label(request: Request) -> str:
+    """Which surface served the request: `s3` for the S3 router, else `rest`.
+
+    The S3 router tags all of its routes `s3`; every other route is REST. This
+    lets a scrape tell the two protocols apart on a shared metric, reusing the
+    same `protocol` vocabulary the audit record carries.
+    """
+    route = request.scope.get("route")
+    tags = getattr(route, "tags", None) or ()
+    return "s3" if "s3" in tags else "rest"
+
+
 class MetricsMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -44,10 +56,13 @@ class MetricsMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _observe(request: Request, status: int, started: float) -> None:
         route = route_label(request)
-        http_requests_total.labels(method=request.method, route=route, status=str(status)).inc()
-        http_request_duration_seconds.labels(method=request.method, route=route).observe(
-            time.perf_counter() - started
-        )
+        protocol = protocol_label(request)
+        http_requests_total.labels(
+            method=request.method, route=route, protocol=protocol, status=str(status)
+        ).inc()
+        http_request_duration_seconds.labels(
+            method=request.method, route=route, protocol=protocol
+        ).observe(time.perf_counter() - started)
 
 
 @router.get("/metrics", include_in_schema=False)
