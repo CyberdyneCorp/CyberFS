@@ -451,6 +451,7 @@ def grant_to_row(grant: Grant) -> m.GrantRow:
         granted_by=grant.granted_by,
         created_at=grant.created_at,
         updated_at=grant.updated_at,
+        pending=grant.pending,
     )
 
 
@@ -463,6 +464,7 @@ def grant_from_row(row: m.GrantRow) -> Grant:
         granted_by=row.granted_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        pending=row.pending,
     )
 
 

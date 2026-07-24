@@ -34,6 +34,7 @@ from cyberfs.application.backup import BackupService
 from cyberfs.application.caching import CacheService
 from cyberfs.application.content import ContentService
 from cyberfs.application.encryption import EncryptionService
+from cyberfs.application.jobs import RewrapJob
 from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.application.s3_auth import S3SignatureVerifier
 from cyberfs.application.s3_authentication import S3Authenticator
@@ -48,6 +49,7 @@ from cyberfs.domain.ports.identity import (
     TokenIntrospector,
     TokenVerifier,
 )
+from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure import metrics
@@ -265,6 +267,7 @@ def build_sharing(
             keys=encryption,
             cache=cache,
             passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
+            async_rewrap_threshold_nodes=settings.async_rewrap_threshold_nodes,
         )
     discovery = build_discovery(settings, http)
     service_tokens = ServiceTokenProvider(
@@ -278,6 +281,7 @@ def build_sharing(
         keys=encryption,
         cache=cache,
         passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
+        async_rewrap_threshold_nodes=settings.async_rewrap_threshold_nodes,
     )
 
 
@@ -551,3 +555,40 @@ def build_backup(
 
 def disabled_backup_probe(settings: Settings) -> BackupHealthProbe:
     return BackupHealthProbe(None, enabled=False, max_age_hours=settings.backup_max_age_hours)
+
+
+# --- rewrap ----------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RewrapWiring:
+    """The async-rewrap worker and its scheduler, assembled for `app.py`."""
+
+    job: RewrapJob
+    scheduler: CronScheduler
+
+
+def build_rewrap(
+    settings: Settings,
+    *,
+    encryption: EncryptionService,
+    cache: CacheService,
+    unit_of_work: Callable[[], UnitOfWork],
+    jobs: JobStatusRegistry,
+) -> RewrapWiring:
+    """Assemble the worker that completes deferred rewraps of large shares.
+
+    The scheduler is merely constructed here; `app.py` starts it in the lifespan
+    once a loop is running. Each run opens a fresh Unit of Work and records its
+    outcome in the job registry, so the operational view reports it like any
+    other job.
+    """
+    job = RewrapJob(encryption, cache, settings)
+
+    async def _run() -> None:
+        with jobs.timer(job.name):
+            async with unit_of_work() as uow:
+                await job.run(uow)
+
+    scheduler = CronScheduler(settings.rewrap_cron, _run, name=job.name)
+    return RewrapWiring(job=job, scheduler=scheduler)

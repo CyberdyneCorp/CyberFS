@@ -291,15 +291,25 @@ class FakeGrantRepository:
         )
 
     async def list_for_node(self, node_id: uuid.UUID) -> tuple[Grant, ...]:
+        # The owner-facing listing keeps pending grants so their status shows.
         return tuple(g for g in self.by_id.values() if g.node_id == node_id)
 
     async def list_for_subject(self, subject: str) -> tuple[Grant, ...]:
-        return tuple(g for g in self.by_id.values() if g.subject == subject)
+        # Active grants only, mirroring the SQL repository.
+        return tuple(g for g in self.by_id.values() if g.subject == subject and not g.pending)
 
     async def highest_role_over(self, subject: str, node_ids: Sequence[uuid.UUID]) -> Role | None:
         scope = set(node_ids)
-        roles = [g.role for g in self.by_id.values() if g.subject == subject and g.node_id in scope]
+        roles = [
+            g.role
+            for g in self.by_id.values()
+            if g.subject == subject and g.node_id in scope and not g.pending
+        ]
         return max(roles, default=None)
+
+    async def list_pending(self, *, limit: int) -> tuple[Grant, ...]:
+        pending = sorted((g for g in self.by_id.values() if g.pending), key=lambda g: g.created_at)
+        return tuple(pending[:limit])
 
     async def delete_for_node(self, node_id: uuid.UUID) -> int:
         doomed = [g.id for g in self.by_id.values() if g.node_id == node_id]

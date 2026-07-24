@@ -88,10 +88,16 @@ class SharingService:
         keys: KeyRewrapper | None = None,
         cache: CacheService | None = None,
         passphrase_attempts_per_min: int = 10,
+        async_rewrap_threshold_nodes: int = 100,
     ) -> None:
         self._directory = directory
         self._keys = keys
         self._cache = cache
+        #: Above this many encrypted nodes in the shared subtree, the rewrap is
+        #: handed to the background worker and the grant is created pending. At
+        #: or below it, the rewrap stays synchronous and the grant is usable at
+        #: once. See `design.md`, "Resolved tunables".
+        self._async_threshold = async_rewrap_threshold_nodes
         self._attempts = FixedWindowLimiter(
             limit=passphrase_attempts_per_min, window=PASSPHRASE_WINDOW
         )
@@ -116,6 +122,29 @@ class SharingService:
             raise CannotShareWithSelfError()
 
         existing = await uow.grants.find(node.id, subject)
+        # Only a brand-new share of a large encrypted subtree is deferred. A
+        # regrant (role change) of an existing grant stays on the synchronous
+        # path: the rewrap is idempotent, and a recipient must never lose access
+        # they already had by being dropped back to pending.
+        if existing is None and await self._should_defer(uow, node):
+            return await self._grant_pending(uow, user, node, subject, role, moment)
+        return await self._grant_now(uow, user, node, subject, role, existing, moment)
+
+    async def _grant_now(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        subject: str,
+        role: Role,
+        existing: Grant | None,
+        moment: datetime,
+    ) -> Grant:
+        """The synchronous path: rewrap the subtree inside this transaction.
+
+        A grant whose key rewrap failed would be visible but unusable, so the
+        rewrap and the grant commit together.
+        """
         grant = (
             existing.with_role(role, moment)
             if existing is not None
@@ -134,12 +163,53 @@ class SharingService:
         else:
             await uow.grants.add(grant)
 
-        # In the same transaction: a grant whose key rewrap failed would be
-        # visible but unusable.
         await self._rewrap_subtree(uow, node, subject, moment)
+        await self._finalize_grant(uow, user, node, subject, role, existing is not None, moment)
+        return grant
+
+    async def _grant_pending(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        subject: str,
+        role: Role,
+        moment: datetime,
+    ) -> Grant:
+        """The deferred path: store the grant pending and hand the rewrap off.
+
+        No key material is rewrapped inline. Because a pending grant confers no
+        access and is invisible to the recipient, the share is not usable until
+        the background worker rewraps every encrypted descendant and flips it
+        active -- so a partially rewrapped share never appears usable.
+        """
+        grant = Grant(
+            id=uuid.uuid4(),
+            node_id=node.id,
+            subject=subject,
+            role=role,
+            granted_by=user.subject,
+            created_at=moment,
+            updated_at=moment,
+            pending=True,
+        )
+        await uow.grants.add(grant)
+        await self._finalize_grant(uow, user, node, subject, role, False, moment)
+        return grant
+
+    async def _finalize_grant(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        subject: str,
+        role: Role,
+        is_update: bool,
+        moment: datetime,
+    ) -> None:
         await self._audit(
             uow,
-            AuditAction.GRANT_UPDATED if existing else AuditAction.GRANT_CREATED,
+            AuditAction.GRANT_UPDATED if is_update else AuditAction.GRANT_CREATED,
             moment,
             actor=user.subject,
             target=node.id,
@@ -148,7 +218,24 @@ class SharingService:
         )
         await self._invalidate(subject)
         await uow.flush()
-        return grant
+
+    async def _should_defer(self, uow: UnitOfWork, node: Node) -> bool:
+        """Whether this share's rewrap should go to the background worker.
+
+        Only when a key service is present (otherwise the synchronous path fails
+        closed, which is the right answer for an unshareable encrypted subtree)
+        and the subtree holds more encrypted nodes than the threshold.
+        """
+        if self._keys is None:
+            return False
+        return await self._count_encrypted(uow, node) > self._async_threshold
+
+    async def _count_encrypted(self, uow: UnitOfWork, node: Node) -> int:
+        total = 1 if node.encrypted else 0
+        for descendant in await uow.nodes.descendants(node.id, max_depth=ANCESTOR_GUARD_DEPTH):
+            if descendant.encrypted:
+                total += 1
+        return total
 
     async def revoke(
         self,

@@ -68,9 +68,18 @@ class Grant:
     granted_by: str
     created_at: datetime
     updated_at: datetime
+    #: A grant awaiting a background subtree rewrap. A pending grant confers no
+    #: access and is invisible to the recipient until the rewrap completes, so a
+    #: partially rewrapped share never appears usable. Defaulted `False` so every
+    #: existing (small, synchronously rewrapped) grant is active.
+    pending: bool = False
 
     def with_role(self, role: Role, now: datetime) -> Grant:
-        """Regrant replaces the role rather than adding a second grant."""
+        """Regrant replaces the role rather than adding a second grant.
+
+        The pending state is preserved: a role change never silently activates a
+        grant whose rewrap is unfinished, nor drops an active grant to pending.
+        """
         return Grant(
             id=self.id,
             node_id=self.node_id,
@@ -79,6 +88,20 @@ class Grant:
             granted_by=self.granted_by,
             created_at=self.created_at,
             updated_at=now,
+            pending=self.pending,
+        )
+
+    def activated(self, now: datetime) -> Grant:
+        """Flip a pending grant to active once its subtree rewrap has completed."""
+        return Grant(
+            id=self.id,
+            node_id=self.node_id,
+            subject=self.subject,
+            role=self.role,
+            granted_by=self.granted_by,
+            created_at=self.created_at,
+            updated_at=now,
+            pending=False,
         )
 
 

@@ -32,6 +32,7 @@ from cyberfs.adapters.inbound.api.composition import (
     build_key_provider,
     build_object_store,
     build_provisioning,
+    build_rewrap,
     build_s3_authenticator,
     build_sharing,
     disabled_backup_probe,
@@ -78,11 +79,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if scheduler is not None:
         await scheduler.start()
         logger.info("backup_scheduler_started", cron=settings.backup_cron)
+    await app.state.rewrap_scheduler.start()
+    logger.info("rewrap_scheduler_started", cron=settings.rewrap_cron)
     try:
         yield
     finally:
         if scheduler is not None:
             await scheduler.stop()
+        await app.state.rewrap_scheduler.stop()
         await app.state.http.aclose()
         await app.state.engine.dispose()
         logger.info("stopping", version=__version__)
@@ -219,6 +223,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sharing = build_sharing(
         settings, app.state.http, app.state.encryption, app.state.cache
     )
+    rewrap_wiring = build_rewrap(
+        settings,
+        encryption=app.state.encryption,
+        cache=app.state.cache,
+        unit_of_work=app.state.unit_of_work,
+        jobs=app.state.admin.jobs,
+    )
+    app.state.rewrap_job = rewrap_wiring.job
+    app.state.rewrap_scheduler = rewrap_wiring.scheduler
     app.state.health.register(EncryptionHealthProbe(app.state.encryption, app.state.unit_of_work))
     app.state.health.register(AuthHealthProbe(discovery))
 

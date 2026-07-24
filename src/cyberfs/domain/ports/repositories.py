@@ -107,19 +107,36 @@ class GrantRepository(Protocol):
     async def add(self, grant: Grant) -> None: ...
     async def update(self, grant: Grant) -> None: ...
     async def delete(self, grant_id: uuid.UUID) -> None: ...
-    async def find(self, node_id: uuid.UUID, subject: str) -> Grant | None: ...
-    async def list_for_node(self, node_id: uuid.UUID) -> tuple[Grant, ...]: ...
+
+    async def find(self, node_id: uuid.UUID, subject: str) -> Grant | None:
+        """One grant by node and subject, pending or not -- the write path's
+        read, used by grant/revoke and the rewrap worker."""
+        ...
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[Grant, ...]:
+        """Every grant on a node, including pending ones: the owner-facing
+        listing shows a pending share with its status."""
+        ...
 
     async def list_for_subject(self, subject: str) -> tuple[Grant, ...]:
-        """Every grant held by a subject -- the "shared with me" roots."""
+        """The active grants a subject holds -- the "shared with me" roots.
+
+        Excludes pending grants: a share whose background rewrap has not
+        completed confers no access and does not appear in the recipient's view.
+        """
         ...
 
     async def highest_role_over(self, subject: str, node_ids: Sequence[uuid.UUID]) -> Role | None:
-        """The best role `subject` holds anywhere along a path.
+        """The best *active* role `subject` holds anywhere along a path.
 
         Takes the whole ancestor chain at once so effective permission costs
-        one query rather than one per level.
+        one query rather than one per level. Pending grants are excluded, so a
+        grant whose rewrap is unfinished grants nothing anywhere.
         """
+        ...
+
+    async def list_pending(self, *, limit: int) -> tuple[Grant, ...]:
+        """The oldest pending grants, bounded -- the rewrap worker's driver."""
         ...
 
     async def delete_for_node(self, node_id: uuid.UUID) -> int: ...

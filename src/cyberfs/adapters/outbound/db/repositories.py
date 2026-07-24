@@ -213,7 +213,11 @@ class SqlNodeRepository:
     async def search_by_name(self, subject: str, term: str, *, limit: int) -> tuple[Node, ...]:
         """Metadata-only. Content is never indexed or matched."""
         owned = select(m.UserRow.id).where(m.UserRow.subject == subject).scalar_subquery()
-        granted = select(m.GrantRow.node_id).where(m.GrantRow.subject == subject)
+        # Only active grants make a node discoverable: a pending share is
+        # invisible to the recipient, search included.
+        granted = select(m.GrantRow.node_id).where(
+            m.GrantRow.subject == subject, m.GrantRow.pending.is_(False)
+        )
         result = await self._session.execute(
             select(m.NodeRow)
             .where(
@@ -568,6 +572,8 @@ class SqlGrantRepository:
         if row is not None:
             row.role = int(grant.role)
             row.updated_at = grant.updated_at
+            # Carries `activated()`: the worker flips pending -> active here.
+            row.pending = grant.pending
 
     async def delete(self, grant_id: uuid.UUID) -> None:
         await self._session.execute(delete(m.GrantRow).where(m.GrantRow.id == grant_id))
@@ -586,21 +592,37 @@ class SqlGrantRepository:
         return tuple(mappers.grant_from_row(r) for r in result.scalars())
 
     async def list_for_subject(self, subject: str) -> tuple[Grant, ...]:
+        # Active grants only: a pending share confers no access and does not
+        # appear in the recipient's "shared with me".
         result = await self._session.execute(
-            select(m.GrantRow).where(m.GrantRow.subject == subject).order_by(m.GrantRow.created_at)
+            select(m.GrantRow)
+            .where(m.GrantRow.subject == subject, m.GrantRow.pending.is_(False))
+            .order_by(m.GrantRow.created_at)
         )
         return tuple(mappers.grant_from_row(r) for r in result.scalars())
 
     async def highest_role_over(self, subject: str, node_ids: Sequence[uuid.UUID]) -> Role | None:
         if not node_ids:
             return None
+        # Pending grants are excluded: a grant whose rewrap is unfinished grants
+        # nothing anywhere along the path.
         best = await self._session.scalar(
             select(func.max(m.GrantRow.role)).where(
                 m.GrantRow.subject == subject,
                 m.GrantRow.node_id.in_(list(node_ids)),
+                m.GrantRow.pending.is_(False),
             )
         )
         return Role(best) if best is not None else None
+
+    async def list_pending(self, *, limit: int) -> tuple[Grant, ...]:
+        result = await self._session.execute(
+            select(m.GrantRow)
+            .where(m.GrantRow.pending.is_(True))
+            .order_by(m.GrantRow.created_at)
+            .limit(limit)
+        )
+        return tuple(mappers.grant_from_row(r) for r in result.scalars())
 
     async def delete_for_node(self, node_id: uuid.UUID) -> int:
         result = cast(

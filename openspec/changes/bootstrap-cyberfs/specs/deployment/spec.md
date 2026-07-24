@@ -48,6 +48,11 @@ All configuration SHALL come from environment variables validated at startup. Th
 - **WHEN** configuration is logged at startup
 - **THEN** secret values SHALL be redacted
 
+#### Scenario: Background rewrap cadence configured
+
+- **WHEN** `REWRAP_CRON` is set
+- **THEN** the worker that completes deferred rewraps of large shared subtrees SHALL run on that schedule, and its default SHALL make a pending large share usable within a few minutes
+
 ### Requirement: Container images
 
 CyberFS SHALL ship a production image for the API and one for the dashboard, both multi-stage, non-root, and pinned to explicit base image versions.

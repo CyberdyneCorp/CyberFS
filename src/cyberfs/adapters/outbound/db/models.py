@@ -157,6 +157,13 @@ class GrantRow(Base):
     granted_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+    #: A grant whose large-subtree rewrap has been handed to the background
+    #: worker and has not yet completed. A pending grant confers no access and
+    #: is invisible to the recipient. Defaults false so every existing grant --
+    #: synchronously rewrapped -- stays active.
+    pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
 
     __table_args__ = (
         # A regrant replaces the role rather than adding a second row.
@@ -165,6 +172,12 @@ class GrantRow(Base):
         # subject, take the highest role.
         Index("ix_grants_subject_node", "subject", "node_id"),
         Index("ix_grants_node", "node_id"),
+        # The rewrap worker's driver: find pending grants cheaply.
+        Index(
+            "ix_grants_pending",
+            "created_at",
+            postgresql_where=text("pending"),
+        ),
     )
 
 

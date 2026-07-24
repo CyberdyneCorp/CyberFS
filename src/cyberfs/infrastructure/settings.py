@@ -131,6 +131,13 @@ class Settings(BaseSettings):
 
     # --- sharing -------------------------------------------------------
     public_link_max_attempts_per_min: NonNegativeInt = 10
+    # How often the background worker completes the deferred rewrap of large
+    # shared subtrees (those over `ASYNC_REWRAP_THRESHOLD_NODES`). A pending
+    # share confers no access until this worker rewraps every encrypted
+    # descendant for the recipient, so the cadence bounds how long a large share
+    # takes to become usable. See `sharing/spec.md`, "Async rewrap for large
+    # subtrees".
+    rewrap_cron: str = "*/2 * * * *"
 
     # --- activity ------------------------------------------------------
     # How long operation (activity) records are kept before the prune job

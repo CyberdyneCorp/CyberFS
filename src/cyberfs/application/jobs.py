@@ -14,16 +14,30 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Protocol
 
+from cyberfs.application.sharing import KeyRewrapper
 from cyberfs.domain.activity import ACTIVITY_ACTIONS
 from cyberfs.domain.auth.policy import utcnow
+from cyberfs.domain.nodes import Node
 from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore, StoredObject
+from cyberfs.domain.sharing import Grant
 from cyberfs.infrastructure.logging import get_logger
 from cyberfs.infrastructure.metrics import job_runs_total, s3_multipart_uploads_in_flight
 from cyberfs.infrastructure.settings import Settings
 
+#: Bounds every subtree walk, matching the sharing service's guard.
+ANCESTOR_GUARD_DEPTH = 512
+
 logger = get_logger(__name__)
+
+
+class PermissionInvalidator(Protocol):
+    """Drops a subject's cached permission decisions after activation."""
+
+    async def invalidate_permissions_for_subject(self, subject: str) -> None: ...
+
 
 #: `{owner_id}/{node_id}/{version_id}` -- the only shape a live key can have.
 OBJECT_KEY_PATTERN = re.compile(
@@ -56,6 +70,13 @@ class ReconcileResult:
 @dataclass(frozen=True, slots=True)
 class ActivityPruneResult:
     records_pruned: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RewrapResult:
+    grants_scanned: int = 0
+    grants_activated: int = 0
+    nodes_rewrapped: int = 0
 
 
 def parse_object_key(key: str) -> tuple[uuid.UUID, uuid.UUID] | None:
@@ -276,3 +297,115 @@ class ActivityPruneJob:
         job_runs_total.labels(job=self.name, outcome="success").inc()
         logger.info("activity_prune_completed", records=pruned)
         return ActivityPruneResult(pruned)
+
+
+class RewrapJob:
+    """Completes the deferred rewrap of large shared subtrees.
+
+    Sharing a subtree with more encrypted nodes than `ASYNC_REWRAP_THRESHOLD_NODES`
+    stores the grant *pending* and hands the DEK rewrap here. This worker walks
+    each pending grant's whole subtree, rewrapping every encrypted descendant for
+    the recipient (idempotently), then -- only after a clean pass confirms every
+    encrypted node is now decryptable by the recipient -- flips the grant active
+    and drops the recipient's cached permission decisions.
+
+    Crash-safe and idempotent: each grant is completed in its own transaction, so
+    an interruption leaves that grant pending (conferring nothing, since a pending
+    grant is invisible) rather than half-usable, and a later run finishes it --
+    `rewrap_for` never double-wraps an already-wrapped node.
+
+    Create-during-pending gap: because a pending grant confers no access, every
+    file created under the folder up to activation predates this worker's scan and
+    is rewrapped before the grant becomes visible. Files created *after*
+    activation fall under the same behaviour as any synchronous share (the create
+    path mints only the owner's DEK) and are out of this job's scope.
+    """
+
+    name = "rewrap"
+
+    def __init__(
+        self,
+        keys: KeyRewrapper,
+        cache: PermissionInvalidator | None,
+        settings: Settings,
+    ) -> None:
+        self._keys = keys
+        self._cache = cache
+        self._batch = settings.page_size_max
+
+    async def run(self, uow: UnitOfWork, *, now: datetime | None = None) -> RewrapResult:
+        moment = now or utcnow()
+        pending = await uow.grants.list_pending(limit=self._batch)
+
+        activated: list[str] = []
+        nodes_rewrapped = 0
+        for grant in pending:
+            node = await uow.nodes.get(grant.node_id)
+            if node is None or node.is_deleted:
+                # The shared node vanished; drop the grant and its partial keys
+                # rather than looping on it forever.
+                await self._drop(uow, grant)
+                await uow.commit()
+                continue
+            count = await self._activate_one(uow, grant, node, moment)
+            if count is not None:
+                nodes_rewrapped += count
+                activated.append(grant.subject)
+            await uow.commit()
+
+        await self._invalidate(activated)
+        job_runs_total.labels(job=self.name, outcome="success").inc()
+        logger.info(
+            "rewrap_completed",
+            scanned=len(pending),
+            activated=len(activated),
+            nodes=nodes_rewrapped,
+        )
+        return RewrapResult(len(pending), len(activated), nodes_rewrapped)
+
+    async def _activate_one(
+        self, uow: UnitOfWork, grant: Grant, node: Node, now: datetime
+    ) -> int | None:
+        """Rewrap the whole subtree, then activate only on a clean pass.
+
+        Returns the number of nodes rewrapped when the grant was activated, or
+        None when a node could not be rewrapped (the grant stays pending and is
+        retried next tick).
+        """
+        subject = grant.subject
+        subtree = await self._subtree(uow, node)
+        count = 0
+        for item in subtree:
+            if item.encrypted:
+                await self._keys.rewrap_for(uow, item, subject, now)
+                count += 1
+        if not await self._fully_rewrapped(uow, subtree, subject):
+            return None
+        await uow.grants.update(grant.activated(now))
+        return count
+
+    async def _fully_rewrapped(
+        self, uow: UnitOfWork, subtree: tuple[Node, ...], subject: str
+    ) -> bool:
+        """Every encrypted node in the subtree now has a key for the recipient."""
+        for item in subtree:
+            if item.encrypted and await uow.keys.get_data_key(item.id, subject) is None:
+                return False
+        return True
+
+    async def _drop(self, uow: UnitOfWork, grant: Grant) -> None:
+        await uow.grants.delete(grant.id)
+        # Clean up any keys a partial rewrap left, so nothing lingers for a
+        # subject who never gained access.
+        await uow.keys.delete_data_key(grant.node_id, grant.subject)
+
+    @staticmethod
+    async def _subtree(uow: UnitOfWork, node: Node) -> tuple[Node, ...]:
+        descendants = await uow.nodes.descendants(node.id, max_depth=ANCESTOR_GUARD_DEPTH)
+        return (node, *descendants)
+
+    async def _invalidate(self, subjects: list[str]) -> None:
+        if self._cache is None:
+            return
+        for subject in subjects:
+            await self._cache.invalidate_permissions_for_subject(subject)

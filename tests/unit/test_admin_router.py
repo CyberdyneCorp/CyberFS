@@ -117,6 +117,7 @@ def test_the_expected_jobs_are_the_ones_the_spec_names() -> None:
         "reconcile_quotas",
         "backup",
         "activity_prune",
+        "rewrap",
     }
 
 

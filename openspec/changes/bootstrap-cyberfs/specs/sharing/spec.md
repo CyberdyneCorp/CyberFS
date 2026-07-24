@@ -93,6 +93,45 @@ A grant on a folder SHALL apply to every descendant of that folder. A caller's e
 - **WHEN** a file is created inside a folder already shared with a user
 - **THEN** that user SHALL be able to access the new file without any additional grant
 
+### Requirement: Async rewrap for large subtrees
+
+Sharing an encrypted subtree rewraps every descendant's data key for the recipient. When the subtree holds more encrypted nodes than `ASYNC_REWRAP_THRESHOLD_NODES`, the rewrap SHALL be handed to a background worker and the grant SHALL be created pending, becoming usable only once the worker has rewrapped every encrypted descendant for the recipient. A pending grant SHALL confer no access and SHALL NOT appear in the recipient's view, so a partially rewrapped share never appears usable. At or below the threshold the rewrap SHALL remain synchronous and the grant immediately usable.
+
+#### Scenario: Small subtree stays synchronous
+
+- **WHEN** an owner shares a subtree at or below `ASYNC_REWRAP_THRESHOLD_NODES` encrypted nodes
+- **THEN** the system SHALL rewrap every descendant key inside the grant transaction and the recipient SHALL be able to read immediately, with no pending state
+
+#### Scenario: Large subtree is created pending and confers no access
+
+- **WHEN** an owner shares a subtree with more than `ASYNC_REWRAP_THRESHOLD_NODES` encrypted nodes
+- **THEN** the system SHALL create the grant pending, SHALL NOT rewrap inline, and until the worker completes the recipient SHALL be denied every node under it and it SHALL NOT appear in their shared-with-me listing or search
+
+#### Scenario: Worker activation grants access atomically
+
+- **WHEN** the background worker finishes rewrapping every encrypted descendant of a pending grant for the recipient
+- **THEN** the grant SHALL become active, the recipient SHALL thereafter be able to read every encrypted descendant present at activation, and their cached permission decisions SHALL be dropped
+
+#### Scenario: Interrupted rewrap leaves the grant pending
+
+- **WHEN** the worker is interrupted partway through a pending grant's subtree
+- **THEN** the grant SHALL remain pending — conferring no access — and a subsequent run SHALL complete it without wrapping any key twice
+
+#### Scenario: File created while pending is rewrapped before activation
+
+- **WHEN** an encrypted file is created under the shared folder while its grant is still pending
+- **THEN** the worker SHALL rewrap that file for the recipient before activating the grant, so no file present at activation is left undecryptable
+
+#### Scenario: Revoking a pending grant
+
+- **WHEN** an owner revokes a grant that is still pending
+- **THEN** the system SHALL delete the grant and any partially rewrapped keys, and the recipient SHALL be denied
+
+#### Scenario: Owner sees pending status
+
+- **WHEN** an owner lists the grants on a node with a pending share
+- **THEN** the listing SHALL include that grant with its pending status
+
 ### Requirement: Listing and revoking grants
 
 CyberFS SHALL let a node owner list all grants on a node, let any user list nodes shared with them, and let an owner revoke any grant.

@@ -130,6 +130,11 @@ The set of principals who can obtain a file's DEK SHALL be exactly the set of pr
 - **WHEN** a folder containing encrypted files is shared
 - **THEN** the system SHALL rewrap the DEK of every encrypted descendant for the recipient, and SHALL rewrap for encrypted files added later at creation time
 
+#### Scenario: Large folder share rewraps in the background
+
+- **WHEN** a folder with more encrypted descendants than `ASYNC_REWRAP_THRESHOLD_NODES` is shared
+- **THEN** the system SHALL defer the rewrap to a background worker that rewraps every encrypted descendant idempotently and grants access only on completion, so an interrupted worker leaves the grant unusable and never leaves a DEK wrapped for a principal not yet authorized
+
 #### Scenario: Wrapped key destroyed on revoke
 
 - **WHEN** a grant is revoked
