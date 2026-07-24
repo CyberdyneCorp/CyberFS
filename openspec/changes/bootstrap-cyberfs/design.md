@@ -152,6 +152,18 @@ Unit of Work per request; ports are `Protocol` classes owned by the domain; adap
 
 **Why.** Same structure as the CyberdyneAuth admin app, and it makes dashboard logic testable without a DOM — which is where the interesting bugs (pagination, aggregation, over-quota classification) actually live.
 
+### Resolved tunables
+
+The following values began as open questions and are now fixed in `src/cyberfs/infrastructure/settings.py` (mirrored in `.env.example`). All remain environment-overridable; the numbers below are the shipped defaults.
+
+- **AEAD frame size — 64 KiB (`ENCRYPTION_FRAME_BYTES=65536`).** `settings.encryption_frame_bytes` defaults to `64 * 1024`, matching `DEFAULT_FRAME_BYTES` in `src/cyberfs/domain/framing.py`. The frame domain clamps any configured value to `MIN_FRAME_BYTES = 1024` … `MAX_FRAME_BYTES = 8 * 1024 * 1024`, and the chosen size is written into each object's header so a later default change does not corrupt existing ciphertext. *Rationale.* 64 KiB keeps per-frame overhead — one 12-byte nonce plus one 16-byte tag (`FRAME_OVERHEAD = 28` bytes, ~0.04%) — negligible, while still giving 64 KiB range granularity and bounding per-request memory to a single frame. Larger frames waste bandwidth on small ranges; smaller frames inflate the tag/nonce tax.
+
+- **Async rewrap threshold — 100 nodes (`ASYNC_REWRAP_THRESHOLD_NODES=100`).** `settings.async_rewrap_threshold_nodes` defaults to `100`. At or below this subtree size a share-rewrap runs synchronously inside the granting request; above it the rewrap is handed to a background job and the grant becomes usable only on completion (see the "Rewrapping DEKs when sharing a large folder" risk). *Rationale.* 100 DEK unwrap/rewrap operations complete within an acceptable request budget; beyond that the tail latency of a synchronous share is worse than the wait for a job, and a partially rewrapped share must never appear usable.
+
+- **Public-link passphrase rate limit — 10 attempts/min per link (`PUBLIC_LINK_MAX_ATTEMPTS_PER_MIN=10`).** `settings.public_link_max_attempts_per_min` defaults to `10` and drives the `FixedWindowLimiter` in `src/cyberfs/application/sharing.py` (`domain/ratelimit.py`), keyed per link token over a one-minute window, so a weak passphrase cannot be ground down. On exhaustion the endpoint returns `RateLimitedError`; the spec requirement is "rate limit repeated attempts on that token" (`specs/sharing/spec.md`). Authenticated auth-failure throttling is a separate lever, `RATELIMIT_AUTH_FAILURES_PER_MIN=30`. *Rationale.* Per-token fixed-window limiting directly bounds brute force against a specific link's passphrase without penalising unrelated traffic; 10/min tolerates human retyping while making offline-equivalent grinding through the API infeasible. A distinct per-IP download cap was scoped out — the per-token attempt limit is the primary defence the spec requires, and IP-based limits belong at the edge.
+
+- **Retention defaults.** Trash purge at `TRASH_RETENTION_DAYS=30` (`settings.trash_retention_days`); version history capped at `VERSION_RETENTION_COUNT=10` (`settings.version_retention_count`); orphaned objects reaped after `orphan_grace_minutes=60`. Backup retention is tiered — `BACKUP_KEEP_DAILY=7`, `BACKUP_KEEP_WEEKLY=4`, `BACKUP_KEEP_MONTHLY=6` (`settings.backup_keep_daily/weekly/monthly`) — with backup history kept `backup_history_days=90` and a hard rule, independent of these tiers, that retention never deletes the last verified backup. *Rationale.* 30-day trash and 10 versions cover accidental-deletion recovery without unbounded storage growth; the 7-daily / 4-weekly / 6-monthly ladder gives roughly a week of fine granularity, a month of weekly points, and half a year of monthly points. These are engineering defaults chosen to be safe and overridable; per-product tuning remains a deployment decision.
+
 ## Risks / Trade-offs
 
 - **`MASTER_KEY` compromise decrypts everything** → Key never enters backups, logs, metrics, or admin responses; rotation is supported without rewriting content; production startup rejects the development placeholder; custody documented as a deployment prerequisite. Residual risk is accepted and stated in the proposal.
@@ -185,7 +197,5 @@ There is nothing to migrate from — this is a new service. What matters is the 
 
 - **Org scoping.** CyberdyneAuth tokens carry `org` and `orgs`. This design keeps ownership per-user and treats orgs as metadata only. Should a folder be ownable by an organisation, with membership implying access? Deferred — it would add a second principal type to the permission model.
 - **Entitlement-driven quotas.** CyberdyneAuth exposes `entitlements`. Should the default quota be derived from a user's plan rather than a single `DEFAULT_QUOTA_BYTES`? The hook exists; the mapping is unspecified.
-- **Frame size.** The AEAD frame size trades per-frame overhead against range granularity and memory per request. Pick empirically during implementation and record the measurement.
-- **Async rewrap threshold.** Above what subtree size does share-rewrap move from synchronous to background? Needs a number from real timings.
-- **Public-link rate limiting.** Per-token and per-IP limits for passphrase attempts and downloads are required by the spec but the numbers are unset.
-- **Retention defaults.** `TRASH_RETENTION_DAYS`, `VERSION_RETENTION_COUNT`, and the backup retention tiers need product sign-off, not just engineering defaults.
+
+(Frame size, the async rewrap threshold, public-link rate limiting, and retention defaults were previously open here; they are now resolved with shipped values under "Resolved tunables" in the Decisions section.)

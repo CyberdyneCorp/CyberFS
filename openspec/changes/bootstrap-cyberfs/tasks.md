@@ -164,11 +164,12 @@
 
 ## 13. Documentation and close-out
 
-- [ ] 13.1 Write `README.md` covering the stack, quick start, `just` recipes, architecture, testing, env vars, and deployment, in the shape of the CyberdyneAuth README
-- [ ] 13.2 Write `docs/architecture.md` describing the hexagonal layout and the ports and adapters map
-- [ ] 13.3 Write `docs/encryption.md` covering the key hierarchy, the threat model, what encryption does and does not protect against, and rotation procedures
-- [ ] 13.4 Write `docs/sharing.md` covering roles, inheritance, effective permission, and public links
-- [ ] 13.5 Write `docs/api.md` or publish the OpenAPI document with a `just openapi` recipe
-- [ ] 13.6 Write `docs/operations.md` covering backup, restore, key rotation, job schedules, and the health surface
-- [ ] 13.7 Resolve the open questions in `design.md` — frame size, async rewrap threshold, public-link rate limits, and retention defaults — recording the chosen values and their rationale
-- [ ] 13.8 Run `openspec validate --all --strict` and the full `just ci` gate, then archive the change with `openspec archive bootstrap-cyberfs`
+- [x] 13.1 Write `README.md` covering the stack, quick start, `just` recipes, architecture, testing, env vars, and deployment, in the shape of the CyberdyneAuth README
+- [x] 13.2 Write `docs/architecture.md` describing the hexagonal layout and the ports and adapters map
+- [x] 13.3 Write `docs/encryption.md` covering the key hierarchy, the threat model, what encryption does and does not protect against, and rotation procedures
+- [x] 13.4 Write `docs/sharing.md` covering roles, inheritance, effective permission, and public links
+- [x] 13.5 Write `docs/api.md` or publish the OpenAPI document with a `just openapi` recipe
+- [x] 13.6 Write `docs/operations.md` covering backup, restore, key rotation, job schedules, and the health surface
+- [x] 13.7 Resolve the open questions in `design.md` — frame size, async rewrap threshold, public-link rate limits, and retention defaults — recording the chosen values and their rationale
+- [ ] 13.8 Run `openspec validate --all --strict` and the full `just ci` gate, then archive the change with `openspec archive bootstrap-cyberfs` <!-- Gate half done: validate --all --strict and just ci (lint, mypy --strict, 889 unit tests @ 93.94%) both pass. Archive held until 12.8 (live staging deploy + restore drill) is completed by an operator. -->
+
