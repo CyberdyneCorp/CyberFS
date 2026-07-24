@@ -37,15 +37,15 @@
 
 ## 4. File storage — tree and CRUD
 
-- [ ] 4.1 Implement name validation and NFC normalization; reject `/`, `\`, NUL, `.`, `..`, and names outside 1–255 characters
-- [ ] 4.2 Implement folder create, list with deterministic ordering and cursor pagination, rename, and recursive soft delete
-- [ ] 4.3 Implement path derivation on read so renaming a folder rewrites no descendant rows
-- [ ] 4.4 Implement move with cycle detection inside the transaction, `cross_owner_move` refusal, and serialization of concurrent moves
-- [ ] 4.5 Implement copy of a file and of a folder subtree: new owner, fresh objects, quota charged to the copier, no grants carried over
-- [ ] 4.6 Implement optimistic concurrency via an `If-Match` version token returning `412` on mismatch, and `409` on concurrent same-name creation
-- [ ] 4.7 Implement node metadata read including the caller's effective permission and encryption state
-- [ ] 4.8 Implement metadata search scoped to nodes the caller owns or is granted, with no content matching
-- [ ] 4.9 Unit tests for tree invariants, naming, cycles, and concurrency scenarios in `file-storage/spec.md`
+- [x] 4.1 Implement name validation and NFC normalization; reject `/`, `\`, NUL, `.`, `..`, and names outside 1–255 characters
+- [x] 4.2 Implement folder create, list with deterministic ordering and cursor pagination, rename, and recursive soft delete
+- [x] 4.3 Implement path derivation on read so renaming a folder rewrites no descendant rows
+- [x] 4.4 Implement move with cycle detection inside the transaction, `cross_owner_move` refusal, and serialization of concurrent moves
+- [x] 4.5 Implement copy of a file and of a folder subtree: new owner, fresh objects, quota charged to the copier, no grants carried over (structural copy, ownership, and quota done; byte duplication goes through the `ContentDuplicator` port, whose MinIO adapter lands in 5.1)
+- [x] 4.6 Implement optimistic concurrency via an `If-Match` version token returning `412` on mismatch, and `409` on concurrent same-name creation
+- [x] 4.7 Implement node metadata read including the caller's effective permission and encryption state
+- [x] 4.8 Implement metadata search scoped to nodes the caller owns or is granted, with no content matching
+- [x] 4.9 Unit tests for tree invariants, naming, cycles, and concurrency scenarios in `file-storage/spec.md`
 
 ## 5. File storage — objects, versions, quotas
 

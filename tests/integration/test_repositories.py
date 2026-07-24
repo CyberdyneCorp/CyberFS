@@ -14,8 +14,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
+from cyberfs.domain.errors import NameTakenError
 from cyberfs.domain.keys import UserKey
-from cyberfs.domain.nodes import Node, NodeKind
+from cyberfs.domain.nodes import EncryptionDefault, Node, NodeKind
 from cyberfs.domain.users import QuotaUsage, User
 
 pytestmark = pytest.mark.integration
@@ -132,9 +133,10 @@ async def test_org_claims_survive_a_round_trip(uow: SqlUnitOfWork) -> None:
 
 
 async def test_duplicate_live_sibling_name_is_refused(uow: SqlUnitOfWork) -> None:
+    """The constraint violation surfaces as a domain error, not a driver one."""
     user = await make_user(uow)
     await add_folder(uow, user, "reports", user.root_folder_id)
-    with pytest.raises(IntegrityError):
+    with pytest.raises(NameTakenError):
         await add_folder(uow, user, "reports", user.root_folder_id)
 
 
@@ -173,7 +175,7 @@ async def test_unicode_spellings_collide(uow: SqlUnitOfWork) -> None:
     """`café` composed and decomposed must not become two siblings."""
     user = await make_user(uow)
     await add_folder(uow, user, "café", user.root_folder_id)
-    with pytest.raises(IntegrityError):
+    with pytest.raises(NameTakenError):
         await add_folder(uow, user, "café", user.root_folder_id)
 
 
@@ -453,3 +455,74 @@ async def test_subtree_lock_is_acquirable(uow: SqlUnitOfWork) -> None:
     user = await make_user(uow)
     await uow.lock_subtree(user.root_folder_id)
     await uow.lock_subtree(user.root_folder_id)  # re-entrant within one transaction
+
+
+# --- concurrency -----------------------------------------------------------
+
+
+async def test_concurrent_same_name_creation_yields_exactly_one_winner(
+    session_factory: object,
+) -> None:
+    """`file-storage/spec.md`: exactly one succeeds, the other gets a conflict.
+
+    The read-then-write pre-check in the use case can always be raced; the
+    partial unique index is the real guarantee, and its violation must surface
+    as a domain error rather than a raw driver exception.
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from cyberfs.adapters.outbound.db.mappers import node_to_row
+
+    factory: async_sessionmaker[AsyncSession] = session_factory  # type: ignore[assignment]
+
+    async with SqlUnitOfWork(factory) as setup:
+        user = await make_user(setup, "racer")
+        await setup.commit()
+        owner_id, parent_id = user.id, user.root_folder_id
+
+    async def create() -> str:
+        async with SqlUnitOfWork(factory) as uow:
+            uow.session.add(
+                node_to_row(
+                    Node(
+                        id=uuid.uuid4(),
+                        owner_id=owner_id,
+                        kind=NodeKind.FILE,
+                        name="contested.txt",
+                        parent_id=parent_id,
+                        created_at=NOW,
+                        updated_at=NOW,
+                    )
+                )
+            )
+            try:
+                await uow.commit()
+            except NameTakenError:
+                return "conflict"
+            return "created"
+
+    outcomes = await asyncio.gather(create(), create())
+
+    assert sorted(outcomes) == ["conflict", "created"]
+
+
+async def test_encryption_default_survives_a_round_trip(uow: SqlUnitOfWork) -> None:
+    user = await make_user(uow)
+    node = Node(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        kind=NodeKind.FOLDER,
+        name="secret",
+        parent_id=user.root_folder_id,
+        created_at=NOW,
+        updated_at=NOW,
+        encryption_default=EncryptionDefault.ON,
+    )
+    await uow.nodes.add(node)
+    await uow.flush()
+
+    fetched = await uow.nodes.get(node.id)
+    assert fetched is not None
+    assert fetched.encryption_default is EncryptionDefault.ON

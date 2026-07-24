@@ -13,6 +13,7 @@ from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.principal import Org
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
+from cyberfs.domain.sharing import Grant, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -294,4 +295,31 @@ def audit_from_row(row: m.AuditRow) -> AuditRecord:
         reason=row.reason,
         source_ip=row.source_ip,
         context=dict(row.context or {}),
+    )
+
+
+# --- grants ----------------------------------------------------------------
+
+
+def grant_to_row(grant: Grant) -> m.GrantRow:
+    return m.GrantRow(
+        id=grant.id,
+        node_id=grant.node_id,
+        subject=grant.subject,
+        role=int(grant.role),
+        granted_by=grant.granted_by,
+        created_at=grant.created_at,
+        updated_at=grant.updated_at,
+    )
+
+
+def grant_from_row(row: m.GrantRow) -> Grant:
+    return Grant(
+        id=row.id,
+        node_id=row.node_id,
+        subject=row.subject,
+        role=Role(row.role),
+        granted_by=row.granted_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )

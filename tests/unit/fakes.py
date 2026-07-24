@@ -8,6 +8,7 @@ is where real constraint and transaction behaviour actually lives.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from types import TracebackType
 
@@ -15,6 +16,7 @@ from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import Node
 from cyberfs.domain.ports.repositories import Page
+from cyberfs.domain.sharing import Grant, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -178,6 +180,46 @@ class FakeKeyRepository:
         return len(doomed)
 
 
+class FakeGrantRepository:
+    def __init__(self) -> None:
+        self.by_id: dict[uuid.UUID, Grant] = {}
+
+    async def get(self, grant_id: uuid.UUID) -> Grant | None:
+        return self.by_id.get(grant_id)
+
+    async def add(self, grant: Grant) -> None:
+        self.by_id[grant.id] = grant
+
+    async def update(self, grant: Grant) -> None:
+        self.by_id[grant.id] = grant
+
+    async def delete(self, grant_id: uuid.UUID) -> None:
+        self.by_id.pop(grant_id, None)
+
+    async def find(self, node_id: uuid.UUID, subject: str) -> Grant | None:
+        return next(
+            (g for g in self.by_id.values() if g.node_id == node_id and g.subject == subject),
+            None,
+        )
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[Grant, ...]:
+        return tuple(g for g in self.by_id.values() if g.node_id == node_id)
+
+    async def list_for_subject(self, subject: str) -> tuple[Grant, ...]:
+        return tuple(g for g in self.by_id.values() if g.subject == subject)
+
+    async def highest_role_over(self, subject: str, node_ids: Sequence[uuid.UUID]) -> Role | None:
+        scope = set(node_ids)
+        roles = [g.role for g in self.by_id.values() if g.subject == subject and g.node_id in scope]
+        return max(roles, default=None)
+
+    async def delete_for_node(self, node_id: uuid.UUID) -> int:
+        doomed = [g.id for g in self.by_id.values() if g.node_id == node_id]
+        for grant_id in doomed:
+            del self.by_id[grant_id]
+        return len(doomed)
+
+
 class FakeQuotaRepository:
     def __init__(self) -> None:
         self.by_user: dict[uuid.UUID, QuotaUsage] = {}
@@ -212,6 +254,7 @@ class FakeUnitOfWork:
     def __init__(self) -> None:
         self.users = FakeUserRepository()
         self.nodes = FakeNodeRepository()
+        self.grants = FakeGrantRepository()
         self.keys = FakeKeyRepository()
         self.quotas = FakeQuotaRepository()
         self.audit = FakeAuditRepository()

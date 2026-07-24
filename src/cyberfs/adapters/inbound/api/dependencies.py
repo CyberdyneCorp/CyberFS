@@ -13,14 +13,18 @@ being written against the cheap check.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from cyberfs.application.authentication import AuthenticationService
+from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.domain.auth.principal import Principal
 from cyberfs.domain.errors import AuthenticationError
+from cyberfs.domain.ports.repositories import UnitOfWork
+from cyberfs.domain.users import User
 from cyberfs.infrastructure.logging import bind_subject
 
 #: `auto_error=False` so a missing header raises our own problem-details
@@ -83,3 +87,31 @@ async def admin_principal(request: Request, credentials: Credentials) -> Princip
 CurrentPrincipal = Annotated[Principal, Depends(current_principal)]
 FreshPrincipal = Annotated[Principal, Depends(fresh_principal)]
 AdminPrincipal = Annotated[Principal, Depends(admin_principal)]
+
+
+async def unit_of_work(request: Request) -> AsyncIterator[UnitOfWork]:
+    """One transaction per request.
+
+    Opened here and closed here; use cases decide when to commit. Anything
+    left uncommitted rolls back, so a handler that forgets cannot half-save.
+    """
+    async with request.app.state.unit_of_work() as uow:
+        yield uow
+
+
+UnitOfWorkDep = Annotated[UnitOfWork, Depends(unit_of_work)]
+
+
+async def current_user(request: Request, principal: CurrentPrincipal, uow: UnitOfWorkDep) -> User:
+    """Resolve the verified principal to a local user, provisioning on first touch.
+
+    Committed immediately: a caller's very first request must leave them
+    provisioned even if the operation it carried goes on to fail.
+    """
+    provisioning: ProvisioningService = request.app.state.provisioning
+    user = await provisioning.resolve(uow, principal)
+    await uow.commit()
+    return user
+
+
+CurrentUser = Annotated[User, Depends(current_user)]

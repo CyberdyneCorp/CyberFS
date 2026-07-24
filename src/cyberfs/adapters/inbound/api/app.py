@@ -25,8 +25,10 @@ from cyberfs.adapters.inbound.api.composition import (
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
+from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.health import HealthService
+from cyberfs.application.nodes import NodeService
 from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
 from cyberfs.infrastructure.settings import Environment, Settings, get_settings
@@ -79,6 +81,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     verifier, introspector, discovery = build_identity(settings, app.state.http)
     app.state.authentication = build_authentication(settings, verifier, introspector)
     app.state.provisioning = build_provisioning(settings)
+    app.state.nodes = NodeService(
+        max_tree_depth=settings.max_tree_depth,
+        page_size_max=settings.page_size_max,
+    )
     app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still
@@ -98,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_error_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(nodes_router.router)
     if settings.metrics_enabled:
         app.include_router(metrics.router)
 

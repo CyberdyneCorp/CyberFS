@@ -35,7 +35,7 @@ from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
-from cyberfs.domain.sharing import Role
+from cyberfs.domain.sharing import Grant, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -432,6 +432,7 @@ def _paginate[R, T](
 __all__ = [
     "Role",
     "SqlAuditRepository",
+    "SqlGrantRepository",
     "SqlKeyRepository",
     "SqlNodeRepository",
     "SqlQuotaRepository",
@@ -439,3 +440,67 @@ __all__ = [
     "decode_cursor",
     "encode_cursor",
 ]
+
+
+class SqlGrantRepository:
+    """Grants, plus the one query effective-permission resolution needs.
+
+    `highest_role_over` takes a whole ancestor chain at once, so resolving a
+    caller's role costs a single round trip rather than one per level.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, grant_id: uuid.UUID) -> Grant | None:
+        row = await self._session.get(m.GrantRow, grant_id)
+        return mappers.grant_from_row(row) if row else None
+
+    async def add(self, grant: Grant) -> None:
+        self._session.add(mappers.grant_to_row(grant))
+
+    async def update(self, grant: Grant) -> None:
+        row = await self._session.get(m.GrantRow, grant.id)
+        if row is not None:
+            row.role = int(grant.role)
+            row.updated_at = grant.updated_at
+
+    async def delete(self, grant_id: uuid.UUID) -> None:
+        await self._session.execute(delete(m.GrantRow).where(m.GrantRow.id == grant_id))
+
+    async def find(self, node_id: uuid.UUID, subject: str) -> Grant | None:
+        result = await self._session.execute(
+            select(m.GrantRow).where(m.GrantRow.node_id == node_id, m.GrantRow.subject == subject)
+        )
+        row = result.scalar_one_or_none()
+        return mappers.grant_from_row(row) if row else None
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[Grant, ...]:
+        result = await self._session.execute(
+            select(m.GrantRow).where(m.GrantRow.node_id == node_id).order_by(m.GrantRow.subject)
+        )
+        return tuple(mappers.grant_from_row(r) for r in result.scalars())
+
+    async def list_for_subject(self, subject: str) -> tuple[Grant, ...]:
+        result = await self._session.execute(
+            select(m.GrantRow).where(m.GrantRow.subject == subject).order_by(m.GrantRow.created_at)
+        )
+        return tuple(mappers.grant_from_row(r) for r in result.scalars())
+
+    async def highest_role_over(self, subject: str, node_ids: Sequence[uuid.UUID]) -> Role | None:
+        if not node_ids:
+            return None
+        best = await self._session.scalar(
+            select(func.max(m.GrantRow.role)).where(
+                m.GrantRow.subject == subject,
+                m.GrantRow.node_id.in_(list(node_ids)),
+            )
+        )
+        return Role(best) if best is not None else None
+
+    async def delete_for_node(self, node_id: uuid.UUID) -> int:
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(delete(m.GrantRow).where(m.GrantRow.node_id == node_id)),
+        )
+        return int(result.rowcount or 0)
