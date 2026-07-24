@@ -41,6 +41,24 @@ class AuditAction(StrEnum):
     FILENAMES_REVEALED = "admin.filenames_revealed"
     BACKUP_TRIGGERED = "admin.backup_triggered"
 
+    # --- file operations ----------------------------------------------
+    FILE_UPLOADED = "file.uploaded"
+    FILE_DOWNLOADED = "file.downloaded"
+    NODE_CREATED = "node.created"
+    NODE_RENAMED = "node.renamed"
+    NODE_MOVED = "node.moved"
+    NODE_COPIED = "node.copied"
+    NODE_DELETED = "node.deleted"
+    NODE_RESTORED = "node.restored"
+    VERSION_RESTORED = "version.restored"
+
+
+class AuditProtocol(StrEnum):
+    """The surface an operation arrived through, so traffic can be attributed."""
+
+    REST = "rest"
+    S3 = "s3"
+
 
 @dataclass(frozen=True, slots=True)
 class AuditRecord:
@@ -53,6 +71,7 @@ class AuditRecord:
 
     action: AuditAction
     occurred_at: datetime
+    protocol: AuditProtocol = AuditProtocol.REST
     actor_subject: str | None = None
     target_id: str | None = None
     recipient_subject: str | None = None

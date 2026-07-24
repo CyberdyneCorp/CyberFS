@@ -111,7 +111,13 @@ def test_there_is_no_route_for_an_admin_to_grant_themselves_access() -> None:
 
 
 def test_the_expected_jobs_are_the_ones_the_spec_names() -> None:
-    assert set(EXPECTED_JOBS) == {"purge", "orphan_reaper", "reconcile_quotas", "backup"}
+    assert set(EXPECTED_JOBS) == {
+        "purge",
+        "orphan_reaper",
+        "reconcile_quotas",
+        "backup",
+        "activity_prune",
+    }
 
 
 def test_purgeable_datasets_match_the_cache() -> None:

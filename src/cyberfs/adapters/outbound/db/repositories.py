@@ -380,6 +380,22 @@ class SqlAuditRepository:
         rows = list((await self._session.execute(stmt.limit(limit + 1))).scalars())
         return _paginate(rows, limit, mappers.audit_from_row, lambda r: r.occurred_at.isoformat())
 
+    async def prune_activity(self, cutoff: datetime, *, actions: Sequence[str]) -> int:
+        """Delete activity records older than `cutoff`, returning the row count.
+
+        Restricted to the actions passed -- always the activity set, never a
+        security action -- so evidence records survive under their own longer
+        retention.
+        """
+        if not actions:
+            return 0
+        result = await self._session.execute(
+            delete(m.AuditRow).where(
+                m.AuditRow.action.in_(actions), m.AuditRow.occurred_at < cutoff
+            )
+        )
+        return cast(CursorResult[Any], result).rowcount
+
 
 # --- helpers ---------------------------------------------------------------
 

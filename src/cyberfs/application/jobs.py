@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from cyberfs.domain.activity import ACTIVITY_ACTIONS
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore, StoredObject
@@ -48,6 +49,11 @@ class ReaperResult:
 class ReconcileResult:
     users_checked: int = 0
     users_corrected: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityPruneResult:
+    records_pruned: int = 0
 
 
 def parse_object_key(key: str) -> tuple[uuid.UUID, uuid.UUID] | None:
@@ -211,3 +217,31 @@ class ReconcileQuotasJob:
         await uow.commit()
         job_runs_total.labels(job=self.name, outcome="success").inc()
         return ReconcileResult(checked, corrected)
+
+
+class ActivityPruneJob:
+    """Deletes activity records past their retention.
+
+    Only the activity actions are ever passed to the delete, so security
+    records -- denials, grant changes, ownership transfers, encryption changes,
+    admin actions -- survive under the longer audit retention. Losing an
+    activity line is a shrug; losing an evidence line is not, so the two are
+    pruned on different clocks and this job touches only the former.
+    """
+
+    name = "activity_prune"
+
+    #: Frozen once, so the set of prunable actions is stable across a run.
+    _ACTIONS: tuple[str, ...] = tuple(sorted(str(action) for action in ACTIVITY_ACTIONS))
+
+    def __init__(self, settings: Settings) -> None:
+        self._retention = timedelta(days=settings.activity_retention_days)
+
+    async def run(self, uow: UnitOfWork, *, now: datetime | None = None) -> ActivityPruneResult:
+        moment = now or utcnow()
+        cutoff = moment - self._retention
+        pruned = await uow.audit.prune_activity(cutoff, actions=self._ACTIONS)
+        await uow.commit()
+        job_runs_total.labels(job=self.name, outcome="success").inc()
+        logger.info("activity_prune_completed", records=pruned)
+        return ActivityPruneResult(pruned)

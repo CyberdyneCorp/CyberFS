@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from cyberfs.adapters.outbound.db import models as m
-from cyberfs.domain.audit import AuditAction, AuditRecord
+from cyberfs.domain.audit import AuditAction, AuditProtocol, AuditRecord
 from cyberfs.domain.auth.principal import Org
 from cyberfs.domain.backup import BackupRecord, BackupState
 from cyberfs.domain.keys import UserKey, WrappedDataKey
@@ -279,6 +279,7 @@ def audit_to_row(record: AuditRecord) -> m.AuditRow:
     return m.AuditRow(
         action=str(record.action),
         occurred_at=record.occurred_at,
+        protocol=str(record.protocol),
         actor_subject=record.actor_subject,
         target_id=record.target_id,
         recipient_subject=record.recipient_subject,
@@ -292,6 +293,7 @@ def audit_from_row(row: m.AuditRow) -> AuditRecord:
     return AuditRecord(
         action=AuditAction(row.action),
         occurred_at=row.occurred_at,
+        protocol=AuditProtocol(row.protocol),
         actor_subject=row.actor_subject,
         target_id=row.target_id,
         recipient_subject=row.recipient_subject,

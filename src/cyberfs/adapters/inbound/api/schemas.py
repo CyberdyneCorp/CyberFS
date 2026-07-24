@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from cyberfs.application.nodes import NodeView
+from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.backup import BackupRecord, is_stale
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
@@ -386,6 +387,7 @@ class QuotaRequest(BaseModel):
 class AuditEntry(BaseModel):
     action: str
     occurred_at: datetime
+    protocol: str = "rest"
     actor_subject: str | None
     target_id: str | None
     recipient_subject: str | None
@@ -398,6 +400,7 @@ class AuditEntry(BaseModel):
         return cls(
             action=str(record.action),
             occurred_at=record.occurred_at,
+            protocol=str(record.protocol),
             actor_subject=record.actor_subject,
             target_id=record.target_id,
             recipient_subject=record.recipient_subject,
@@ -414,6 +417,76 @@ class AuditPage(BaseModel):
     @classmethod
     def of(cls, page: Page[AuditRecord]) -> AuditPage:
         return cls(items=[AuditEntry.of(r) for r in page.items], next_cursor=page.next_cursor)
+
+
+class ActivitySummary(BaseModel):
+    """Counts, byte totals, and busiest day over the requested window."""
+
+    window_start: datetime
+    window_end: datetime
+    uploads: int
+    downloads: int
+    shares_granted: int
+    shares_revoked: int
+    deletions: int
+    restores: int
+    bytes_uploaded: int
+    bytes_downloaded: int
+    busiest_day: date | None
+
+    @classmethod
+    def of(cls, rollup: ActivityRollup) -> ActivitySummary:
+        return cls(
+            window_start=rollup.window_start,
+            window_end=rollup.window_end,
+            uploads=rollup.uploads,
+            downloads=rollup.downloads,
+            shares_granted=rollup.shares_granted,
+            shares_revoked=rollup.shares_revoked,
+            deletions=rollup.deletions,
+            restores=rollup.restores,
+            bytes_uploaded=rollup.bytes_uploaded,
+            bytes_downloaded=rollup.bytes_downloaded,
+            busiest_day=rollup.busiest_day,
+        )
+
+
+class ActivityItem(BaseModel):
+    """One operation in the feed.
+
+    A node the caller does not own -- or one already purged -- is identified by
+    `node_id` alone, with `node_name` left null.
+    """
+
+    action: str
+    occurred_at: datetime
+    node_id: str | None
+    node_name: str | None
+    protocol: str
+
+    @classmethod
+    def of(cls, entry: ActivityEntry) -> ActivityItem:
+        return cls(
+            action=str(entry.action),
+            occurred_at=entry.occurred_at,
+            node_id=entry.node_id,
+            node_name=entry.node_name,
+            protocol=str(entry.protocol),
+        )
+
+
+class ActivityResponse(BaseModel):
+    summary: ActivitySummary
+    items: list[ActivityItem]
+    next_cursor: str | None = None
+
+    @classmethod
+    def of(cls, rollup: ActivityRollup, feed: Page[ActivityEntry]) -> ActivityResponse:
+        return cls(
+            summary=ActivitySummary.of(rollup),
+            items=[ActivityItem.of(entry) for entry in feed.items],
+            next_cursor=feed.next_cursor,
+        )
 
 
 class JobSummary(BaseModel):

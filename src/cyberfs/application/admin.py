@@ -92,7 +92,7 @@ class _JobTimer:
         )
 
 
-EXPECTED_JOBS = ("purge", "orphan_reaper", "reconcile_quotas", "backup")
+EXPECTED_JOBS = ("purge", "orphan_reaper", "reconcile_quotas", "backup", "activity_prune")
 
 
 class AdminService:

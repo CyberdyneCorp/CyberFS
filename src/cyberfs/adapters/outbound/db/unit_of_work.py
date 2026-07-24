@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from cyberfs.adapters.outbound.db.activity_queries import SqlActivityQueries
 from cyberfs.adapters.outbound.db.admin_queries import SqlAdminQueries
 from cyberfs.adapters.outbound.db.repositories import (
     SqlAuditRepository,
@@ -75,6 +76,7 @@ class SqlUnitOfWork:
         self.quotas = SqlQuotaRepository(session)
         self.audit = SqlAuditRepository(session)
         self.admin = SqlAdminQueries(session)
+        self.activity = SqlActivityQueries(session)
         return self
 
     async def __aexit__(

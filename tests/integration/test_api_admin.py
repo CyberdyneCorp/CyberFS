@@ -424,7 +424,7 @@ def test_the_operations_view_reports_dependencies(client: TestClient) -> None:
 def test_the_operations_view_lists_every_expected_job(client: TestClient) -> None:
     operations = client.get("/api/v1/admin/operations", headers=ADMIN).json()
     names = {job["name"] for job in operations["jobs"]}
-    assert names == {"purge", "orphan_reaper", "reconcile_quotas", "backup"}
+    assert names == {"purge", "orphan_reaper", "reconcile_quotas", "backup", "activity_prune"}
 
 
 def test_a_job_that_has_never_run_says_so(client: TestClient) -> None:

@@ -187,7 +187,11 @@ async def download_via_link(
     if owner is None:
         raise NotFoundError("no such link")
     # Read as the owner: the link carries the owner's read access, never more.
-    plan = await content.download(uow, owner, access.node.id, range_header=range_header)
+    # The read is attributed to the link, not the owner: there is no
+    # authenticated caller, and it is not the owner's own activity.
+    plan = await content.download(
+        uow, owner, access.node.id, range_header=range_header, link_id=access.link.id
+    )
     await uow.commit()
     return stream_response(plan)
 

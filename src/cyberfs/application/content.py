@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 
+from cyberfs.application.auditing import authorize_or_record, emit_audit, owner_context
 from cyberfs.application.encryption import EncryptionService
 from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
@@ -24,7 +25,6 @@ from cyberfs.domain.errors import (
     ValidationError,
 )
 from cyberfs.domain.nodes import FileVersion, Node, NodeKind, validate_name
-from cyberfs.domain.permissions import require_role
 from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.sharing import Role
@@ -115,6 +115,37 @@ class ContentService:
         self._retention = version_retention_count
         self._encryption = encryption
 
+    # --- auditing ------------------------------------------------------
+
+    @staticmethod
+    async def _audit(
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        action: AuditAction,
+        when: datetime,
+        *,
+        byte_count: int | None = None,
+    ) -> None:
+        """Emit one file-operation record, non-blocking, name only when owned.
+
+        The plaintext byte count is carried where one applies (upload,
+        download); it feeds the activity summary without ever holding content.
+        """
+        context = owner_context(node, user.id)
+        if byte_count is not None:
+            context["bytes"] = byte_count
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=action,
+                occurred_at=when,
+                actor_subject=user.subject,
+                target_id=str(node.id),
+                context=context,
+            ),
+        )
+
     # --- upload --------------------------------------------------------
 
     async def upload(
@@ -147,9 +178,13 @@ class ContentService:
         node = existing or await self._new_file(
             uow, parent, name, moment, encrypted=wants_encryption
         )
-        return await self._store_version(
+        stored = await self._store_version(
             uow, user, node, body, content_type, declared_length, moment
         )
+        await self._audit(
+            uow, user, stored, AuditAction.FILE_UPLOADED, moment, byte_count=stored.size_bytes
+        )
+        return stored
 
     async def replace(
         self,
@@ -167,9 +202,13 @@ class ContentService:
         if not node.is_file:
             raise ValidationError("only a file has content", node_id=str(node_id))
         await self._require(uow, user, node, Role.EDITOR)
-        return await self._store_version(
+        stored = await self._store_version(
             uow, user, node, body, content_type, declared_length, moment
         )
+        await self._audit(
+            uow, user, stored, AuditAction.FILE_UPLOADED, moment, byte_count=stored.size_bytes
+        )
+        return stored
 
     async def _resolve_encryption(
         self,
@@ -379,7 +418,9 @@ class ContentService:
         # Read the current content through the old setting, then write it back
         # under the new one. A failure part-way leaves the original intact
         # because the node only flips once the new version is committed.
-        plan = await self.download(uow, user, node_id)
+        # The conversion read is machinery, not a user download, so it emits no
+        # download record of its own.
+        plan = await self.download(uow, user, node_id, record_audit=False)
         buffered = _replay(plan.stream)
         node.encrypted = encrypted
         stored = await self._store_version(
@@ -412,7 +453,11 @@ class ContentService:
         *,
         range_header: str | None = None,
         version_id: uuid.UUID | None = None,
+        record_audit: bool = True,
+        link_id: uuid.UUID | None = None,
+        now: datetime | None = None,
     ) -> DownloadPlan:
+        moment = now or utcnow()
         node = await self._require_node(uow, node_id)
         if not node.is_file:
             raise ValidationError("only a file has content", node_id=str(node_id))
@@ -432,6 +477,8 @@ class ContentService:
             # range read is not, so it is streamed without that check.
             guarded = stream if wanted else _verify(stream, version)
         bytes_downloaded_total.labels(encrypted=str(node.encrypted).lower()).inc(served)
+        if record_audit:
+            await self._audit_download(uow, user, node, served, moment, link_id)
         return DownloadPlan(
             node=node,
             version=version,
@@ -439,6 +486,38 @@ class ContentService:
             total_bytes=version.size_bytes,
             served_bytes=served,
             content_range=wanted,
+        )
+
+    @staticmethod
+    async def _audit_download(
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        served: int,
+        when: datetime,
+        link_id: uuid.UUID | None,
+    ) -> None:
+        """Record a read, attributing it to the link when there is no caller.
+
+        A public-link read has no authenticated user, so it names the link and
+        never the owner. Every read carries its plaintext byte count; the name
+        appears only when the actor owns the node.
+        """
+        if link_id is not None:
+            context: dict[str, object] = {"bytes": served, "link_id": str(link_id)}
+            actor: str | None = None
+        else:
+            context = {"bytes": served, **owner_context(node, user.id)}
+            actor = user.subject
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=AuditAction.FILE_DOWNLOADED,
+                occurred_at=when,
+                actor_subject=actor,
+                target_id=str(node.id),
+                context=context,
+            ),
         )
 
     async def _open_encrypted(
@@ -510,6 +589,7 @@ class ContentService:
         await uow.nodes.update(node)
         await uow.flush()
         await self._prune_versions(uow, node, moment)
+        await self._audit(uow, user, node, AuditAction.VERSION_RESTORED, moment)
         return node
 
     async def duplicate(self, uow: UnitOfWork, source: Node, target: Node, now: datetime) -> int:
@@ -574,7 +654,13 @@ class ContentService:
             is_owner=node.owner_id == user.id,
             granted=(granted,) if granted is not None else (),
         )
-        return require_role(role, minimum, node_id=node.id)
+        return await authorize_or_record(
+            uow,
+            actor_subject=user.subject,
+            node_id=node.id,
+            effective=role,
+            minimum=minimum,
+        )
 
     @staticmethod
     async def _resolve_version(

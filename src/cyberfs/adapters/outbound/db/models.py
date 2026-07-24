@@ -290,6 +290,11 @@ class AuditRow(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+    #: The surface the operation arrived through -- `rest` or `s3` -- so REST
+    #: and S3 traffic can be told apart. Defaults to `rest` for existing rows.
+    protocol: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="rest", default="rest"
+    )
     actor_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     recipient_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)

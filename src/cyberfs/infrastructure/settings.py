@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     # --- sharing -------------------------------------------------------
     public_link_max_attempts_per_min: NonNegativeInt = 10
 
+    # --- activity ------------------------------------------------------
+    # How long operation (activity) records are kept before the prune job
+    # deletes them. Security records -- denials, grants, transfers, encryption
+    # changes, admin actions -- are retained separately and are never pruned
+    # here. See `activity-reporting/spec.md`.
+    activity_retention_days: PositiveInt = 90
+    # The longest window `GET /api/v1/me/activity` will answer; a longer request
+    # is refused with 422 rather than scanning an unbounded range.
+    activity_max_window_days: PositiveInt = 90
+
     # --- backup --------------------------------------------------------
     backup_enabled: bool = False
     backup_cron: str = "0 3 * * *"

@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from cyberfs.application.auditing import authorize_or_record, emit_audit, owner_context
 from cyberfs.application.caching import CacheService
+from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
     CrossOwnerMoveError,
@@ -30,7 +32,7 @@ from cyberfs.domain.nodes import (
     normalize_name,
     validate_name,
 )
-from cyberfs.domain.permissions import require_role, resolve_effective_role
+from cyberfs.domain.permissions import resolve_effective_role
 from cyberfs.domain.ports.repositories import Page, UnitOfWork
 from cyberfs.domain.sharing import Role
 from cyberfs.domain.users import User
@@ -100,7 +102,14 @@ class NodeService:
             # a missing node from one the caller may not see.
             raise NotFoundError("node not found", node_id=str(node_id))
         role = await self.effective_role(uow, user.subject, user.id, node)
-        return node, require_role(role, minimum, node_id=node_id)
+        granted = await authorize_or_record(
+            uow,
+            actor_subject=user.subject,
+            node_id=node_id,
+            effective=role,
+            minimum=minimum,
+        )
+        return node, granted
 
     # --- reads ---------------------------------------------------------
 
@@ -141,6 +150,22 @@ class NodeService:
 
     # --- writes --------------------------------------------------------
 
+    @staticmethod
+    async def _audit(
+        uow: UnitOfWork, user: User, node: Node, action: AuditAction, when: datetime
+    ) -> None:
+        """Emit one operation record, non-blocking, name only when owned."""
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=action,
+                occurred_at=when,
+                actor_subject=user.subject,
+                target_id=str(node.id),
+                context=owner_context(node, user.id),
+            ),
+        )
+
     async def create_folder(
         self,
         uow: UnitOfWork,
@@ -171,6 +196,7 @@ class NodeService:
         await self._ensure_name_free(uow, parent.id, node.normalized_name)
         await uow.nodes.add(node)
         await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_CREATED, moment)
         await self._invalidate(node.id, old_parent=parent.id)
         return await self._view(uow, node, Role.OWNER if node.owner_id == user.id else Role.EDITOR)
 
@@ -198,6 +224,7 @@ class NodeService:
         node.rename(candidate, moment)
         await uow.nodes.update(node)
         await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_RENAMED, moment)
         await self._invalidate(node.id, old_parent=node.parent_id)
         return await self._view(uow, node, role)
 
@@ -237,6 +264,7 @@ class NodeService:
         node.move_to(destination.id, moment)
         await uow.nodes.update(node)
         await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_MOVED, moment)
         # A move changes inherited access for everyone with a grant above the
         # old or new location, so every permission decision is dropped.
         await self._invalidate(
@@ -267,6 +295,7 @@ class NodeService:
         # from live to trashed until a purge actually frees them.
         await self._move_bytes(uow, node.owner_id, bytes_trashed, moment, to_trash=True)
         await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_DELETED, moment)
         await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
         return count
 
@@ -284,10 +313,12 @@ class NodeService:
         if node is None or not node.is_deleted:
             raise NotFoundError("no trashed node with that id", node_id=str(node_id))
         # Only the owner sees their trash; grants were dropped on delete.
-        require_role(
-            resolve_effective_role(is_owner=node.owner_id == user.id),
-            Role.OWNER,
+        await authorize_or_record(
+            uow,
+            actor_subject=user.subject,
             node_id=node_id,
+            effective=resolve_effective_role(is_owner=node.owner_id == user.id),
+            minimum=Role.OWNER,
         )
 
         parent = await uow.nodes.get(node.parent_id) if node.parent_id else None
@@ -303,6 +334,7 @@ class NodeService:
         restored = await self._subtree_bytes(uow, node)
         await self._move_bytes(uow, node.owner_id, restored, moment, to_trash=False)
         await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_RESTORED, moment)
         await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
         return await self._view(uow, node, Role.OWNER)
 
@@ -339,6 +371,10 @@ class NodeService:
         if source.is_folder:
             await self._copy_subtree(uow, user, source, root_copy, moment, content)
         await uow.flush()
+        # The audited fact is "the user copied X" -- the root copy, not each
+        # child individually. A copy is always owned by the caller, so its name
+        # is present.
+        await self._audit(uow, user, root_copy, AuditAction.NODE_COPIED, moment)
         return await self._view(uow, root_copy, Role.OWNER)
 
     async def _copy_subtree(

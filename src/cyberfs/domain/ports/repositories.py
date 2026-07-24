@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
+from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
@@ -173,8 +174,53 @@ class AuditRepository(Protocol):
         limit: int,
         cursor: str | None = None,
     ) -> Page[AuditRecord]:
-        """Read-only. There is deliberately no update or delete: audit records
-        are immutable through the API, even for administrators."""
+        """Read-only. There is deliberately no update or delete through the API:
+        audit records are immutable, even for administrators."""
+        ...
+
+    async def prune_activity(self, cutoff: datetime, *, actions: Sequence[str]) -> int:
+        """Delete activity records older than `cutoff`, returning how many went.
+
+        The one deliberate delete on this table, and it is restricted: only the
+        activity actions are ever passed, so security records -- denials,
+        grants, transfers, encryption changes, admin actions -- are untouched.
+        This is retention pruning, not a hole in the append-only contract.
+        """
+        ...
+
+
+class ActivityQueries(Protocol):
+    """Aggregate and feed reads for a user's own activity.
+
+    Every method is scoped to a single `actor_subject`: there is no shape here
+    that could return another user's operations.
+    """
+
+    async def summary(
+        self, *, actor_subject: str, since: datetime, until: datetime
+    ) -> ActivityRollup:
+        """Counts per action, plaintext byte totals, and the busiest day.
+
+        Answerable from the `(actor_subject, occurred_at)` index rather than a
+        full scan.
+        """
+        ...
+
+    async def feed(
+        self,
+        *,
+        actor_subject: str,
+        since: datetime,
+        until: datetime,
+        action: str | None = None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> Page[ActivityEntry]:
+        """Individual operations, newest first, optionally filtered by action.
+
+        A node the caller does not own -- or one that has since been purged --
+        is returned by id with no name.
+        """
         ...
 
 
@@ -208,6 +254,9 @@ class UnitOfWork(Protocol):
     #: Read-only aggregates for the admin surface. Sums and counts only --
     #: there is no method here that could return content.
     admin: AdminQueries
+    #: Read-only aggregates for a caller's own activity. Self-scoped by
+    #: `actor_subject`; no method here can return another user's operations.
+    activity: ActivityQueries
 
     async def __aenter__(self) -> UnitOfWork: ...
     async def __aexit__(self, *exc: object) -> None: ...

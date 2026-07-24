@@ -7,12 +7,19 @@ is where real constraint and transaction behaviour actually lives.
 
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from types import TracebackType
 
-from cyberfs.domain.audit import AuditRecord
+from cyberfs.domain.activity import (
+    ActivityCount,
+    ActivityEntry,
+    ActivityRollup,
+    build_rollup,
+)
+from cyberfs.domain.audit import AuditProtocol, AuditRecord
 from cyberfs.domain.errors import NotFoundError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
@@ -304,12 +311,114 @@ class FakeQuotaRepository:
 class FakeAuditRepository:
     def __init__(self) -> None:
         self.records: list[AuditRecord] = []
+        #: When set, `add` raises, so the non-blocking-audit path is testable.
+        self.fail_add = False
 
     async def add(self, record: AuditRecord) -> None:
+        if self.fail_add:
+            raise RuntimeError("audit store is unavailable")
         self.records.append(record)
 
     async def query(self, **_: object) -> Page[AuditRecord]:
         return Page(items=tuple(self.records))
+
+    async def prune_activity(self, cutoff: datetime, *, actions: Sequence[str]) -> int:
+        wanted = set(actions)
+        doomed = [r for r in self.records if str(r.action) in wanted and r.occurred_at < cutoff]
+        for record in doomed:
+            self.records.remove(record)
+        return len(doomed)
+
+
+class FakeActivityQueries:
+    """In-memory activity aggregates over the audit records.
+
+    Honors the same rules the SQL adapter does: self-scoping by actor, the
+    window bound, action filtering, newest-first order, and a name only when
+    the calling user owns the node (purged and cross-user nodes stay id-only).
+    """
+
+    def __init__(
+        self,
+        audit: FakeAuditRepository,
+        nodes: FakeNodeRepository,
+        users: FakeUserRepository,
+    ) -> None:
+        self._audit = audit
+        self._nodes = nodes
+        self._users = users
+
+    def _in_window(self, actor_subject: str, since: datetime, until: datetime) -> list[AuditRecord]:
+        return [
+            r
+            for r in self._audit.records
+            if r.actor_subject == actor_subject and since <= r.occurred_at < until
+        ]
+
+    async def summary(
+        self, *, actor_subject: str, since: datetime, until: datetime
+    ) -> ActivityRollup:
+        counts = [
+            ActivityCount(
+                action=r.action,
+                day=r.occurred_at.date(),
+                count=1,
+                bytes=int(r.context.get("bytes", 0) or 0),
+            )
+            for r in self._in_window(actor_subject, since, until)
+        ]
+        return build_rollup(counts, window_start=since, window_end=until)
+
+    async def feed(
+        self,
+        *,
+        actor_subject: str,
+        since: datetime,
+        until: datetime,
+        action: str | None = None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> Page[ActivityEntry]:
+        rows = self._in_window(actor_subject, since, until)
+        if action is not None:
+            rows = [r for r in rows if str(r.action) == action]
+        rows.sort(key=lambda r: r.occurred_at, reverse=True)
+        if cursor is not None:
+            edge = datetime.fromisoformat(base64.urlsafe_b64decode(cursor.encode()).decode())
+            rows = [r for r in rows if r.occurred_at < edge]
+
+        has_more = len(rows) > limit
+        visible = rows[:limit]
+        actor = await self._users.get_by_subject(actor_subject)
+        actor_id = actor.id if actor is not None else None
+        entries = tuple(self._to_entry(r, actor_id) for r in visible)
+        next_cursor = (
+            base64.urlsafe_b64encode(visible[-1].occurred_at.isoformat().encode()).decode()
+            if has_more and visible
+            else None
+        )
+        return Page(items=entries, next_cursor=next_cursor)
+
+    def _to_entry(self, record: AuditRecord, actor_id: uuid.UUID | None) -> ActivityEntry:
+        name = self._owned_name(record.target_id, actor_id)
+        return ActivityEntry(
+            action=record.action,
+            occurred_at=record.occurred_at,
+            node_id=record.target_id,
+            node_name=name,
+            protocol=record.protocol or AuditProtocol.REST,
+        )
+
+    def _owned_name(self, target_id: str | None, actor_id: uuid.UUID | None) -> str | None:
+        if target_id is None or actor_id is None:
+            return None
+        try:
+            node = self._nodes.by_id.get(uuid.UUID(target_id))
+        except ValueError:
+            return None
+        if node is None or node.owner_id != actor_id:
+            return None
+        return node.name
 
 
 class FakeUnitOfWork:
@@ -324,6 +433,7 @@ class FakeUnitOfWork:
         self.keys = FakeKeyRepository()
         self.quotas = FakeQuotaRepository(self.nodes)
         self.audit = FakeAuditRepository()
+        self.activity = FakeActivityQueries(self.audit, self.nodes, self.users)
         self.committed = 0
         self.rolled_back = 0
         self.flushed = 0

@@ -1,28 +1,28 @@
 ## 1. Operation auditing (shared prerequisite)
 
-- [ ] 1.1 Add the file-operation audit actions (`file.uploaded`, `file.downloaded`, `node.created`, `node.renamed`, `node.moved`, `node.copied`, `node.deleted`, `node.restored`, `version.restored`) to `AuditAction`
-- [ ] 1.2 Add a `protocol` field to `AuditRecord` and its row, so REST and S3 traffic are distinguishable, defaulting to `rest`
-- [ ] 1.3 Emit records from `NodeService` and `ContentService` for every operation named above, carrying the actor, node, and plaintext byte count where one applies
-- [ ] 1.4 Attribute public-link reads to the link rather than to a user, since there is no authenticated caller
-- [ ] 1.5 Make audit writes non-blocking: a failed record logs at error level and the operation still succeeds
-- [ ] 1.6 Omit the file name from any record whose actor does not own the node
-- [ ] 1.7 Add the index on `(actor_subject, occurred_at)` the summary query must be answerable from, with a migration
-- [ ] 1.8 Unit tests for every scenario in `file-storage/spec.md`'s "File operations are auditable" requirement
+- [x] 1.1 Add the file-operation audit actions (`file.uploaded`, `file.downloaded`, `node.created`, `node.renamed`, `node.moved`, `node.copied`, `node.deleted`, `node.restored`, `version.restored`) to `AuditAction`
+- [x] 1.2 Add a `protocol` field to `AuditRecord` and its row, so REST and S3 traffic are distinguishable, defaulting to `rest`
+- [x] 1.3 Emit records from `NodeService` and `ContentService` for every operation named above, carrying the actor, node, and plaintext byte count where one applies
+- [x] 1.4 Attribute public-link reads to the link rather than to a user, since there is no authenticated caller
+- [x] 1.5 Make audit writes non-blocking: a failed record logs at error level and the operation still succeeds
+- [x] 1.6 Omit the file name from any record whose actor does not own the node
+- [x] 1.7 Add the index on `(actor_subject, occurred_at)` the summary query must be answerable from, with a migration
+- [x] 1.8 Unit tests for every scenario in `file-storage/spec.md`'s "File operations are auditable" requirement
 
 ## 2. Activity reporting
 
-- [ ] 2.1 Add `ACTIVITY_RETENTION_DAYS` and `ACTIVITY_MAX_WINDOW_DAYS` settings, documented in `.env.example`
-- [ ] 2.2 Define the activity rollup and feed value objects in `domain/activity.py`, pure and independently testable
-- [ ] 2.3 Implement the aggregate query: counts per action, bytes uploaded and downloaded, and the busiest day, over a bounded window
-- [ ] 2.4 Implement `ActivityService` returning the rollup plus a paginated, newest-first feed, filterable by action
-- [ ] 2.5 Expose `GET /api/v1/me/activity`, self-scoped with no parameter naming another subject, refusing a window beyond the maximum with `422`
-- [ ] 2.6 Identify nodes the caller does not own by id only, never by name
-- [ ] 2.7 Keep entries for purged nodes in the feed, identified by id
-- [ ] 2.8 Refuse the endpoint to service principals, which own no tree
-- [ ] 2.9 Implement the activity prune job, retaining security records (denials, grants, transfers, encryption changes, admin actions) under the longer audit retention
-- [ ] 2.10 Register the prune job in the admin operations view alongside the existing jobs
-- [ ] 2.11 Unit tests for every scenario in `activity-reporting/spec.md`
-- [ ] 2.12 Integration test: a user's uploads, downloads, and shares appear in their own activity and in nobody else's
+- [x] 2.1 Add `ACTIVITY_RETENTION_DAYS` and `ACTIVITY_MAX_WINDOW_DAYS` settings, documented in `.env.example`
+- [x] 2.2 Define the activity rollup and feed value objects in `domain/activity.py`, pure and independently testable
+- [x] 2.3 Implement the aggregate query: counts per action, bytes uploaded and downloaded, and the busiest day, over a bounded window
+- [x] 2.4 Implement `ActivityService` returning the rollup plus a paginated, newest-first feed, filterable by action
+- [x] 2.5 Expose `GET /api/v1/me/activity`, self-scoped with no parameter naming another subject, refusing a window beyond the maximum with `422`
+- [x] 2.6 Identify nodes the caller does not own by id only, never by name
+- [x] 2.7 Keep entries for purged nodes in the feed, identified by id
+- [x] 2.8 Refuse the endpoint to service principals, which own no tree
+- [x] 2.9 Implement the activity prune job, retaining security records (denials, grants, transfers, encryption changes, admin actions) under the longer audit retention
+- [x] 2.10 Register the prune job in the admin operations view alongside the existing jobs
+- [x] 2.11 Unit tests for every scenario in `activity-reporting/spec.md`
+- [x] 2.12 Integration test: a user's uploads, downloads, and shares appear in their own activity and in nobody else's
 
 ## 3. S3 access keys
 

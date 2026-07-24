@@ -139,6 +139,10 @@ async def download_content(
     plan = await _service(request).download(
         uow, user, node_id, range_header=range_header, version_id=version_id
     )
+    # The read emits a download audit record; commit it before streaming so an
+    # owner can see their content was read. The stream itself is pure
+    # object-store I/O and does not touch the session.
+    await uow.commit()
     return stream_response(plan)
 
 
