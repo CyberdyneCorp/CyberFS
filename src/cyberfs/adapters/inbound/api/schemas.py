@@ -249,3 +249,10 @@ class TransferRequest(BaseModel):
     recipient: str = Field(min_length=1, max_length=320)
     #: Leave the previous owner an explicit editor grant, per the spec default.
     keep_editor_access: bool = True
+
+
+class EncryptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Turning this off lowers protection; it requires `owner` and is audited.
+    encrypted: bool

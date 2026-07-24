@@ -18,11 +18,14 @@ from cyberfs.adapters.inbound.api import health, metrics
 from cyberfs.adapters.inbound.api.composition import (
     AuthHealthProbe,
     DatabaseHealthProbe,
+    EncryptionHealthProbe,
     ObjectStoreHealthProbe,
     build_authentication,
     build_content,
+    build_encryption,
     build_http_client,
     build_identity,
+    build_key_provider,
     build_object_store,
     build_provisioning,
     build_sharing,
@@ -101,15 +104,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.http = build_http_client(settings)
     verifier, introspector, discovery = build_identity(settings, app.state.http)
     app.state.authentication = build_authentication(settings, verifier, introspector)
-    app.state.provisioning = build_provisioning(settings)
+    app.state.keys = build_key_provider(settings)
+    app.state.encryption = build_encryption(settings, app.state.keys)
+    app.state.provisioning = build_provisioning(settings, app.state.keys)
     app.state.nodes = NodeService(
         max_tree_depth=settings.max_tree_depth,
         page_size_max=settings.page_size_max,
     )
     app.state.objects = build_object_store(settings)
-    app.state.content = build_content(settings, app.state.objects)
+    app.state.content = build_content(settings, app.state.objects, app.state.encryption)
     app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
-    app.state.sharing = build_sharing(settings, app.state.http)
+    app.state.sharing = build_sharing(settings, app.state.http, app.state.encryption)
+    app.state.health.register(EncryptionHealthProbe(app.state.encryption, app.state.unit_of_work))
     app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still

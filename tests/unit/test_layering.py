@@ -26,6 +26,8 @@ FORBIDDEN_IN_PURE_LAYERS = {
     "httpx",
     "uvicorn",
     "prometheus_client",
+    # Crypto primitives belong beside the key provider, not in a use case.
+    "cryptography",
 }
 
 PURE_LAYERS = ("domain", "application")

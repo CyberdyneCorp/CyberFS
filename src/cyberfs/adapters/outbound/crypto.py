@@ -25,6 +25,9 @@ NONCE_BYTES = 12
 #: Binds a wrapped blob to its purpose, so a KEK-wrapping ciphertext can never
 #: be replayed where a DEK-wrapping one is expected.
 KEK_ASSOCIATED_DATA = b"cyberfs/kek/v1"
+#: The layer below. Distinct associated data means a sealed DEK can never
+#: be replayed where a sealed KEK is expected, or the reverse.
+DEK_ASSOCIATED_DATA = b"cyberfs/dek/v1"
 
 
 def master_key_id(key: bytes) -> str:
@@ -83,6 +86,21 @@ class MasterKeyProvider:
         except InvalidTag as exc:
             # Deliberately opaque: never echo nonce, tag, or ciphertext.
             raise KeyUnavailableError("wrapped key failed authentication") from exc
+
+    # --- data keys -----------------------------------------------------
+
+    def wrap_dek(self, dek: bytes, kek: bytes) -> bytes:
+        if len(dek) != KEY_BYTES:
+            raise KeyUnavailableError("data key must be 32 bytes")
+        nonce = os.urandom(NONCE_BYTES)
+        return nonce + AESGCM(kek).encrypt(nonce, dek, DEK_ASSOCIATED_DATA)
+
+    def unwrap_dek(self, wrapped: bytes, kek: bytes) -> bytes:
+        nonce, sealed = wrapped[:NONCE_BYTES], wrapped[NONCE_BYTES:]
+        try:
+            return AESGCM(kek).decrypt(nonce, sealed, DEK_ASSOCIATED_DATA)
+        except InvalidTag as exc:
+            raise KeyUnavailableError("wrapped data key failed authentication") from exc
 
     def _key_for(self, key_id: str) -> bytes:
         if key_id == self._current_id:

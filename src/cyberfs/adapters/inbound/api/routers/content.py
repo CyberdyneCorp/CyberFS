@@ -15,7 +15,7 @@ from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
 from cyberfs.adapters.inbound.api.dependencies import CurrentUser, UnitOfWorkDep
-from cyberfs.adapters.inbound.api.schemas import NodeSummary, VersionList
+from cyberfs.adapters.inbound.api.schemas import EncryptionRequest, NodeSummary, VersionList
 from cyberfs.application.content import ContentService, DownloadPlan
 
 router = APIRouter(prefix="/api/v1", tags=["content"])
@@ -94,6 +94,7 @@ async def upload_file(
     uow: UnitOfWorkDep,
     content_type: ContentType = None,
     content_length: ContentLength = None,
+    encrypted: Annotated[bool | None, Query()] = None,
 ) -> NodeSummary:
     node = await _service(request).upload(
         uow,
@@ -103,7 +104,25 @@ async def upload_file(
         request.stream(),
         content_type=content_type,
         declared_length=content_length,
+        encrypted=encrypted,
     )
+    await uow.commit()
+    return NodeSummary.of(node)
+
+
+@router.put(
+    "/nodes/{node_id}/encryption",
+    response_model=NodeSummary,
+    summary="Turn content encryption on or off for a file",
+)
+async def set_encryption(
+    node_id: uuid.UUID,
+    body: EncryptionRequest,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+) -> NodeSummary:
+    node = await _service(request).set_encryption(uow, user, node_id, encrypted=body.encrypted)
     await uow.commit()
     return NodeSummary.of(node)
 

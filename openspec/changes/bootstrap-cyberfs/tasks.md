@@ -77,20 +77,20 @@
 
 ## 7. Content encryption
 
-- [ ] 7.1 Define the `KeyProvider` and `ContentCipher` ports in the domain
-- [ ] 7.2 Implement the key hierarchy: `MASTER_KEY` wrapping per-user KEKs, KEKs wrapping per-file DEKs; keys generated from a CSPRNG; unwrapped material never persisted or logged
-- [ ] 7.3 Implement framed AES-256-GCM sealing with a unique nonce per frame and frame index plus version id bound as associated data
-- [ ] 7.4 Implement streaming encryption on upload and streaming decryption on download with bounded memory, plus frame-granular range decryption
-- [ ] 7.5 Implement tamper, reorder, truncation, and cross-version-substitution detection, returning `integrity_failure` and an alert-level log without leaking nonces, tags, or ciphertext
-- [ ] 7.6 Implement the opt-in model: immutable per-file `encrypted` flag, folder `encryption_default` of `inherit`/`on`/`off`, nearest-ancestor resolution, `ENCRYPTION_DEFAULT_ON`, per-request override recorded in the audit log, and existing files unaffected by a later default change
-- [ ] 7.7 Implement encryption-state conversion as an atomic new-version rewrite; require `owner` to decrypt; destroy plaintext objects on encrypt and wrapped keys on decrypt; audit every downgrade
-- [ ] 7.8 Implement DEK rewrap on share and revoke inside the grant transaction, including folder shares rewrapping every encrypted descendant and new descendants rewrapping at creation
-- [ ] 7.9 Implement the async rewrap path for large subtrees, with the grant becoming visible only on completion
-- [ ] 7.10 Implement `MASTER_KEY` rotation accepting the previous and new key concurrently, rewrapping all KEKs without touching content, resumable after interruption
-- [ ] 7.11 Implement per-user KEK rotation rewrapping all DEKs and destroying the old KEK on completion
-- [ ] 7.12 Add readiness failure when `MASTER_KEY` is absent while encrypted files exist
-- [ ] 7.13 Unit tests for the key hierarchy, framing, associated-data binding, inheritance resolution, and rotation resumability
-- [ ] 7.14 Integration tests asserting MinIO objects contain no plaintext, that a revoked recipient has no wrapped DEK, and that admins receive no key material from any endpoint
+- [x] 7.1 Define the `KeyProvider` and `ContentCipher` ports in the domain
+- [x] 7.2 Implement the key hierarchy: `MASTER_KEY` wrapping per-user KEKs, KEKs wrapping per-file DEKs; keys generated from a CSPRNG; unwrapped material never persisted or logged
+- [x] 7.3 Implement framed AES-256-GCM sealing with a unique nonce per frame and frame index plus version id bound as associated data
+- [x] 7.4 Implement streaming encryption on upload and streaming decryption on download with bounded memory, plus frame-granular range decryption
+- [x] 7.5 Implement tamper, reorder, truncation, and cross-version-substitution detection, returning `integrity_failure` and an alert-level log without leaking nonces, tags, or ciphertext
+- [x] 7.6 Implement the opt-in model: immutable per-file `encrypted` flag, folder `encryption_default` of `inherit`/`on`/`off`, nearest-ancestor resolution, `ENCRYPTION_DEFAULT_ON`, per-request override recorded in the audit log, and existing files unaffected by a later default change
+- [x] 7.7 Implement encryption-state conversion as an atomic new-version rewrite; require `owner` to decrypt; destroy plaintext objects on encrypt and wrapped keys on decrypt; audit every downgrade
+- [x] 7.8 Implement DEK rewrap on share and revoke inside the grant transaction, including folder shares rewrapping every encrypted descendant and new descendants rewrapping at creation
+- [ ] 7.9 **DEFERRED** Implement the async rewrap path for large subtrees. Rewrap is currently synchronous, which already satisfies the observable contract (the grant is visible only once every descendant key is rewrapped, inside the same transaction). The async path is a latency optimisation for very large subtrees and needs a background worker, which arrives with the job runner; `ASYNC_REWRAP_THRESHOLD_NODES` is unused until then.
+- [x] 7.10 Implement `MASTER_KEY` rotation accepting the previous and new key concurrently, rewrapping all KEKs without touching content, resumable after interruption
+- [x] 7.11 Implement per-user KEK rotation rewrapping all DEKs and destroying the old KEK on completion
+- [x] 7.12 Add readiness failure when `MASTER_KEY` is absent while encrypted files exist
+- [x] 7.13 Unit tests for the key hierarchy, framing, associated-data binding, inheritance resolution, and rotation resumability
+- [x] 7.14 Integration tests asserting MinIO objects contain no plaintext, that a revoked recipient has no wrapped DEK, and that admins receive no key material from any endpoint
 
 ## 8. Caching
 

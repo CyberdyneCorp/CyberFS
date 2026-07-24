@@ -13,9 +13,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 
+from cyberfs.application.encryption import EncryptionService
+from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
     IntegrityFailureError,
+    KeyUnavailableError,
     NotFoundError,
     PayloadTooLargeError,
     ValidationError,
@@ -104,11 +107,13 @@ class ContentService:
         max_upload_bytes: int,
         upload_chunk_bytes: int,
         version_retention_count: int,
+        encryption: EncryptionService | None = None,
     ) -> None:
         self._objects = objects
         self._max_upload_bytes = max_upload_bytes
         self._chunk_bytes = upload_chunk_bytes
         self._retention = version_retention_count
+        self._encryption = encryption
 
     # --- upload --------------------------------------------------------
 
@@ -122,6 +127,7 @@ class ContentService:
         *,
         content_type: str | None = None,
         declared_length: int | None = None,
+        encrypted: bool | None = None,
         now: datetime | None = None,
     ) -> Node:
         """Create a file, or add a version to the one already at `name`."""
@@ -134,8 +140,13 @@ class ContentService:
         existing = await uow.nodes.get_child_by_name(parent.id, _normalized(name))
         if existing is not None and not existing.is_file:
             raise ValidationError("a folder already uses that name", node_id=str(existing.id))
+        wants_encryption = False
+        if existing is None:
+            wants_encryption = await self._resolve_encryption(uow, parent, encrypted, user, moment)
 
-        node = existing or await self._new_file(uow, parent, name, moment)
+        node = existing or await self._new_file(
+            uow, parent, name, moment, encrypted=wants_encryption
+        )
         return await self._store_version(
             uow, user, node, body, content_type, declared_length, moment
         )
@@ -160,7 +171,36 @@ class ContentService:
             uow, user, node, body, content_type, declared_length, moment
         )
 
-    async def _new_file(self, uow: UnitOfWork, parent: Node, name: str, now: datetime) -> Node:
+    async def _resolve_encryption(
+        self,
+        uow: UnitOfWork,
+        parent: Node,
+        requested: bool | None,
+        user: User,
+        now: datetime,
+    ) -> bool:
+        """Apply the opt-in and inheritance rules, auditing an override."""
+        if self._encryption is None:
+            return False
+        decided: bool = await self._encryption.should_encrypt(uow, parent, requested=requested)
+        inherited = await self._encryption.should_encrypt(uow, parent, requested=None)
+        if requested is not None and decided != inherited:
+            # An explicit choice that contradicts the folder's default is
+            # recorded -- especially a downgrade.
+            await uow.audit.add(
+                AuditRecord(
+                    action=AuditAction.ENCRYPTION_OVERRIDDEN,
+                    occurred_at=now,
+                    actor_subject=user.subject,
+                    target_id=str(parent.id),
+                    context={"requested": decided, "inherited": inherited},
+                )
+            )
+        return decided
+
+    async def _new_file(
+        self, uow: UnitOfWork, parent: Node, name: str, now: datetime, *, encrypted: bool = False
+    ) -> Node:
         node = Node(
             id=uuid.uuid4(),
             # Charged to the folder's owner, not the uploader: an editor
@@ -171,6 +211,7 @@ class ContentService:
             parent_id=parent.id,
             created_at=now,
             updated_at=now,
+            encrypted=encrypted,
         )
         await uow.nodes.add(node)
         await uow.flush()
@@ -197,11 +238,15 @@ class ContentService:
         version_id = uuid.uuid4()
         key = f"{node.owner_id}/{node.id}/{version_id}"
         digest = hashlib.sha256()
-        counted = _measure(body, digest, self._max_upload_bytes)
+        tally = _Tally()
+        counted = _measure(body, digest, self._max_upload_bytes, tally)
 
-        stored = await self._objects.put(
-            key, counted, content_type=content_type or DEFAULT_CONTENT_TYPE
-        )
+        payload = await self._seal_if_needed(uow, node, counted, version_id, now)
+        await self._objects.put(key, payload, content_type=content_type or DEFAULT_CONTENT_TYPE)
+        # Plaintext bytes throughout: what the caller sent, what a download
+        # returns, and what the quota charges. Ciphertext overhead is under
+        # 0.05% and is deliberately not billed.
+        stored = tally.total
         if declared_length is not None and stored != declared_length:
             # The client lied or the connection truncated; either way the
             # object is wrong, so it goes away and nothing is recorded.
@@ -237,6 +282,27 @@ class ContentService:
         await self._prune_versions(uow, node, now)
         bytes_uploaded_total.labels(encrypted=str(node.encrypted).lower()).inc(stored)
         return node
+
+    async def _seal_if_needed(
+        self,
+        uow: UnitOfWork,
+        node: Node,
+        plaintext: AsyncIterator[bytes],
+        version_id: uuid.UUID,
+        now: datetime,
+    ) -> AsyncIterator[bytes]:
+        """Frame and seal the stream when the file is encrypted."""
+        if not node.encrypted:
+            return plaintext
+        if self._encryption is None:
+            raise KeyUnavailableError("encryption is not configured")
+        owner = await uow.users.get(node.owner_id)
+        if owner is None:
+            raise KeyUnavailableError("the node has no owner record")
+        # A fresh DEK per version: a key is never reused across versions, so a
+        # frame from one can never be replayed into another.
+        dek = await self._encryption.create_data_key(uow, node, owner.subject, now)
+        return await self._encryption.seal(plaintext, dek, version_id)
 
     async def _check_admission(
         self, uow: UnitOfWork, node: Node, declared_length: int | None
@@ -287,6 +353,55 @@ class ContentService:
             await uow.quotas.update(usage)
         await uow.flush()
 
+    async def set_encryption(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        *,
+        encrypted: bool,
+        now: datetime | None = None,
+    ) -> Node:
+        """Convert a file between encrypted and plaintext.
+
+        An explicit rewrite into a new version, never an in-place flip. Only an
+        owner may do it, because turning encryption *off* lowers protection and
+        `content-encryption/spec.md` forbids a silent downgrade.
+        """
+        moment = now or utcnow()
+        node = await self._require_node(uow, node_id)
+        if not node.is_file:
+            raise ValidationError("only a file has content", node_id=str(node_id))
+        await self._require(uow, user, node, Role.OWNER)
+        if node.encrypted == encrypted:
+            return node
+
+        # Read the current content through the old setting, then write it back
+        # under the new one. A failure part-way leaves the original intact
+        # because the node only flips once the new version is committed.
+        plan = await self.download(uow, user, node_id)
+        buffered = _replay(plan.stream)
+        node.encrypted = encrypted
+        stored = await self._store_version(
+            uow, user, node, buffered, node.content_type, None, moment
+        )
+
+        if not encrypted:
+            # The wrapped keys are useless now, and keeping them would leave
+            # key material for content that no longer needs it.
+            await uow.keys.delete_data_keys_for_node(node.id)
+        await uow.audit.add(
+            AuditRecord(
+                action=(
+                    AuditAction.ENCRYPTION_ENABLED if encrypted else AuditAction.ENCRYPTION_DISABLED
+                ),
+                occurred_at=moment,
+                actor_subject=user.subject,
+                target_id=str(node.id),
+            )
+        )
+        return stored
+
     # --- download ------------------------------------------------------
 
     async def download(
@@ -305,14 +420,17 @@ class ContentService:
 
         version = await self._resolve_version(uow, node, version_id)
         wanted = parse_range(range_header, version.size_bytes)
-        offset = wanted.start if wanted else 0
-        length = wanted.length if wanted else None
-
-        stream = self._objects.get(version.object_key, offset=offset, length=length)
         served = wanted.length if wanted else version.size_bytes
-        # A whole-object read is verifiable against the recorded digest; a
-        # range read is not, so it is streamed without that check.
-        guarded = stream if wanted else _verify(stream, version)
+
+        if version.encrypted:
+            guarded = await self._open_encrypted(uow, node, version, user, wanted)
+        else:
+            offset = wanted.start if wanted else 0
+            length = wanted.length if wanted else None
+            stream = self._objects.get(version.object_key, offset=offset, length=length)
+            # A whole-object read is verifiable against the recorded digest; a
+            # range read is not, so it is streamed without that check.
+            guarded = stream if wanted else _verify(stream, version)
         bytes_downloaded_total.labels(encrypted=str(node.encrypted).lower()).inc(served)
         return DownloadPlan(
             node=node,
@@ -322,6 +440,28 @@ class ContentService:
             served_bytes=served,
             content_range=wanted,
         )
+
+    async def _open_encrypted(
+        self,
+        uow: UnitOfWork,
+        node: Node,
+        version: FileVersion,
+        user: User,
+        wanted: ByteRange | None,
+    ) -> AsyncIterator[bytes]:
+        """Decrypt frame by frame, fetching only the frames a range touches."""
+        if self._encryption is None:
+            raise KeyUnavailableError("encryption is not configured")
+        dek = await self._encryption.data_key_for(uow, node, user.subject)
+
+        if wanted is None:
+            stream = self._objects.get(version.object_key)
+            return self._encryption.open(stream, dek, version.id)
+
+        span = self._encryption.plan_range(wanted.start, wanted.length, version.size_bytes)
+        offset, length = span.ciphertext_range(self._encryption.frame_bytes)
+        stream = self._objects.get(version.object_key, offset=offset, length=length)
+        return self._encryption.open(stream, dek, version.id, span=span)
 
     async def list_versions(
         self, uow: UnitOfWork, user: User, node_id: uuid.UUID
@@ -455,20 +595,40 @@ def _normalized(name: str) -> str:
     return normalize_name(name)
 
 
+class _Tally:
+    """Carries the plaintext byte count out of the streaming pipeline."""
+
+    __slots__ = ("total",)
+
+    def __init__(self) -> None:
+        self.total = 0
+
+
 async def _measure(
-    body: AsyncIterator[bytes], digest: hashlib._Hash, limit: int
+    body: AsyncIterator[bytes], digest: hashlib._Hash, limit: int, tally: _Tally
 ) -> AsyncIterator[bytes]:
     """Pass bytes through, hashing and counting, refusing an oversized body.
 
-    The limit is enforced here rather than after the fact so a client cannot
-    make the service store gigabytes before being told no.
+    Counting happens here, before any sealing, so the recorded size and digest
+    describe the plaintext regardless of whether the file is encrypted. The
+    limit is enforced mid-stream so a client cannot make the service store
+    gigabytes before being told no.
     """
-    total = 0
     async for chunk in body:
-        total += len(chunk)
-        if total > limit:
+        tally.total += len(chunk)
+        if tally.total > limit:
             raise PayloadTooLargeError("upload exceeds the maximum size", limit=limit)
         digest.update(chunk)
+        yield chunk
+
+
+async def _replay(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Re-emit a stream so it can be fed into a fresh write.
+
+    Conversion is the one path that reads and writes the same content, and the
+    read must complete against the old key before the new write begins.
+    """
+    async for chunk in source:
         yield chunk
 
 

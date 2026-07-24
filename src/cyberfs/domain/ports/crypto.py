@@ -7,7 +7,10 @@ key hierarchy is never reachable except through an interface the domain owns.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Protocol
+
+from cyberfs.domain.framing import FrameSpan
 
 
 class KeyProvider(Protocol):
@@ -35,3 +38,37 @@ class KeyProvider(Protocol):
         accepted while a rotation is in flight.
         """
         ...
+
+    def wrap_dek(self, dek: bytes, kek: bytes) -> bytes:
+        """Seal a file's data key under a user's key-encryption key."""
+        ...
+
+    def unwrap_dek(self, wrapped: bytes, kek: bytes) -> bytes: ...
+
+
+class ContentCipher(Protocol):
+    """Seals and opens file content in authenticated frames."""
+
+    @property
+    def frame_bytes(self) -> int: ...
+
+    def generate_key(self) -> bytes:
+        """A fresh 256-bit data key, unique to one file version."""
+        ...
+
+    def seal(
+        self, plaintext: AsyncIterator[bytes], key: bytes, version_id: bytes
+    ) -> AsyncIterator[bytes]: ...
+
+    def open(
+        self,
+        ciphertext: AsyncIterator[bytes],
+        key: bytes,
+        version_id: bytes,
+        *,
+        span: FrameSpan | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Decrypt, verifying every frame. `span` decrypts a sub-range."""
+        ...
+
+    def ciphertext_length(self, plaintext_bytes: int) -> int: ...

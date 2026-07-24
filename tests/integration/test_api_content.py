@@ -275,3 +275,156 @@ def test_restoring_brings_the_content_back(client: TestClient) -> None:
 
     response = client.get(f"/api/v1/nodes/{node['id']}/content", headers=ALICE)
     assert response.content == PAYLOAD
+
+
+# --- encryption ------------------------------------------------------------
+
+
+def test_an_encrypted_upload_round_trips(client: TestClient) -> None:
+    root = root_id(client, ALICE)
+    response = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true",
+        content=PAYLOAD,
+        headers=ALICE,
+    )
+    assert response.status_code == HTTPStatus.CREATED
+    assert response.json()["encrypted"] is True
+
+    node = response.json()["id"]
+    fetched = client.get(f"/api/v1/nodes/{node}/content", headers=ALICE)
+    assert fetched.content == PAYLOAD
+    assert fetched.headers["Content-Length"] == str(len(PAYLOAD))
+
+
+def test_the_object_in_minio_holds_no_plaintext(client: TestClient) -> None:
+    """`content-encryption/spec.md`: reading the object directly yields nothing.
+
+    Checked against the real bucket, not a fake -- this is the property the
+    whole capability exists for.
+    """
+    root = root_id(client, ALICE)
+    marker = b"QUARTERLY-REVENUE-CONFIDENTIAL"
+    body = marker * 40
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=body, headers=ALICE
+    ).json()
+
+    versions = client.get(f"/api/v1/nodes/{created['id']}/versions", headers=ALICE).json()
+    stored = stored_object(client, str(created["id"]), str(versions["items"][0]["id"]))
+
+    assert marker not in stored
+    assert body[:64] not in stored
+    assert len(stored) > len(body), "ciphertext carries a header and per-frame tags"
+
+
+def stored_object(client: TestClient, node_id: str, version_id: str) -> bytes:
+    """Fetch an object straight from MinIO, bypassing the API entirely.
+
+    Owner ids are deliberately not exposed by the API, so the key is found by
+    listing rather than constructed.
+    """
+    settings = client.app.state.settings  # type: ignore[attr-defined]
+    minio = Minio(
+        settings.minio_endpoint,
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        secure=False,
+    )
+    suffix = f"/{node_id}/{version_id}"
+    for entry in minio.list_objects(settings.minio_bucket, recursive=True):
+        name = entry.object_name or ""
+        if name.endswith(suffix):
+            return bytes(minio.get_object(settings.minio_bucket, name).read())
+    raise AssertionError(f"no stored object for {suffix}")
+
+
+def test_a_range_read_of_encrypted_content(client: TestClient) -> None:
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()
+
+    response = client.get(
+        f"/api/v1/nodes/{created['id']}/content", headers={**ALICE, "Range": "bytes=50-99"}
+    )
+    assert response.status_code == HTTPStatus.PARTIAL_CONTENT
+    assert response.content == PAYLOAD[50:100]
+
+
+def test_a_plaintext_file_can_be_encrypted_in_place(client: TestClient) -> None:
+    root = root_id(client, ALICE)
+    created = upload(client, ALICE, root, "convert.bin", PAYLOAD)
+
+    response = client.put(
+        f"/api/v1/nodes/{created['id']}/encryption", json={"encrypted": True}, headers=ALICE
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["encrypted"] is True
+
+    fetched = client.get(f"/api/v1/nodes/{created['id']}/content", headers=ALICE)
+    assert fetched.content == PAYLOAD
+
+
+def test_an_encrypted_file_can_be_decrypted(client: TestClient) -> None:
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()
+
+    response = client.put(
+        f"/api/v1/nodes/{created['id']}/encryption", json={"encrypted": False}, headers=ALICE
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert client.get(f"/api/v1/nodes/{created['id']}/content", headers=ALICE).content == PAYLOAD
+
+
+def test_an_encrypted_file_can_be_shared_and_read(client: TestClient) -> None:
+    root_id(client, BOB)
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()
+
+    granted = client.put(
+        f"/api/v1/nodes/{created['id']}/grants",
+        json={"recipient": "bob", "role": "viewer"},
+        headers=ALICE,
+    )
+    assert granted.status_code == HTTPStatus.CREATED
+
+    assert client.get(f"/api/v1/nodes/{created['id']}/content", headers=BOB).content == PAYLOAD
+
+
+def test_revoking_leaves_the_recipient_unable_to_read(client: TestClient) -> None:
+    root_id(client, BOB)
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()
+    client.put(
+        f"/api/v1/nodes/{created['id']}/grants",
+        json={"recipient": "bob", "role": "viewer"},
+        headers=ALICE,
+    )
+    assert client.get(f"/api/v1/nodes/{created['id']}/content", headers=BOB).status_code == 200
+
+    client.delete(f"/api/v1/nodes/{created['id']}/grants/bob", headers=ALICE)
+
+    after = client.get(f"/api/v1/nodes/{created['id']}/content", headers=BOB)
+    assert after.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_no_response_ever_carries_key_material(client: TestClient) -> None:
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/secret.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()
+
+    for response in (
+        client.get(f"/api/v1/nodes/{created['id']}", headers=ALICE),
+        client.get(f"/api/v1/nodes/{created['id']}/versions", headers=ALICE),
+        client.get(f"/api/v1/nodes/{root}/children", headers=ALICE),
+    ):
+        body = response.text.lower()
+        for marker in ("wrapped", "dek", "kek", "master_key", "wrapped_dek"):
+            assert marker not in body, f"{marker} leaked into {response.url}"

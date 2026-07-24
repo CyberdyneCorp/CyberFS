@@ -20,10 +20,12 @@ from cyberfs.adapters.outbound.auth.discovery import DiscoveryClient
 from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClient
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
 from cyberfs.adapters.outbound.auth.verifier import JwtTokenVerifier
+from cyberfs.adapters.outbound.cipher import AesGcmContentCipher
 from cyberfs.adapters.outbound.crypto import MasterKeyProvider
 from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
 from cyberfs.application.content import ContentService
+from cyberfs.application.encryption import EncryptionService
 from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.application.sharing import SharingService
 from cyberfs.domain.auth.policy import CacheWindow
@@ -150,14 +152,8 @@ class AuthHealthProbe:
         )
 
 
-def build_provisioning(settings: Settings) -> ProvisioningService:
-    return ProvisioningService(
-        MasterKeyProvider(
-            settings.master_key_bytes,
-            previous=settings.master_key_previous_bytes,
-        ),
-        default_quota_bytes=settings.default_quota_bytes,
-    )
+def build_provisioning(settings: Settings, keys: MasterKeyProvider) -> ProvisioningService:
+    return ProvisioningService(keys, default_quota_bytes=settings.default_quota_bytes)
 
 
 def build_object_store(settings: Settings) -> MinioObjectStore:
@@ -174,12 +170,27 @@ def build_object_store(settings: Settings) -> MinioObjectStore:
     )
 
 
-def build_content(settings: Settings, objects: ObjectStore) -> ContentService:
+def build_key_provider(settings: Settings) -> MasterKeyProvider:
+    return MasterKeyProvider(settings.master_key_bytes, previous=settings.master_key_previous_bytes)
+
+
+def build_encryption(settings: Settings, keys: MasterKeyProvider) -> EncryptionService:
+    return EncryptionService(
+        keys,
+        AesGcmContentCipher(settings.encryption_frame_bytes),
+        encryption_default_on=settings.encryption_default_on,
+    )
+
+
+def build_content(
+    settings: Settings, objects: ObjectStore, encryption: EncryptionService
+) -> ContentService:
     return ContentService(
         objects,
         max_upload_bytes=settings.max_upload_bytes,
         upload_chunk_bytes=settings.upload_chunk_bytes,
         version_retention_count=settings.version_retention_count,
+        encryption=encryption,
     )
 
 
@@ -203,11 +214,14 @@ class ObjectStoreHealthProbe:
         )
 
 
-def build_sharing(settings: Settings, http: httpx.AsyncClient) -> SharingService:
+def build_sharing(
+    settings: Settings, http: httpx.AsyncClient, encryption: EncryptionService
+) -> SharingService:
     """Wire the recipient directory, or a stub when auth is stubbed."""
     if settings.auth_dev_mode:
         return SharingService(
             LocalOnlyDirectory(),
+            keys=encryption,
             passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
         )
     discovery = build_discovery(settings, http)
@@ -219,6 +233,7 @@ def build_sharing(settings: Settings, http: httpx.AsyncClient) -> SharingService
     )
     return SharingService(
         CyberdyneDirectory(settings.cyberdyne_auth_base_url, service_tokens, http),
+        keys=encryption,
         passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
     )
 
@@ -232,3 +247,30 @@ class LocalOnlyDirectory:
 
     async def find_subject(self, identifier: str, *, within_orgs: Sequence[str] = ()) -> str | None:
         return identifier.strip() or None
+
+
+class EncryptionHealthProbe:
+    """Reports whether the configured master key opens what is stored.
+
+    A key that cannot unwrap existing material must take the replica out of
+    rotation, not surface as a 500 on every encrypted file.
+    """
+
+    name = "encryption"
+    criticality = Criticality.REQUIRED
+
+    def __init__(self, encryption: EncryptionService, unit_of_work: object) -> None:
+        self._encryption = encryption
+        self._unit_of_work = unit_of_work
+
+    async def check(self) -> ComponentHealth:
+        started = time.perf_counter()
+        async with self._unit_of_work() as uow:  # type: ignore[operator]
+            usable = await self._encryption.verify_master_key(uow)
+        return ComponentHealth(
+            name=self.name,
+            status=ComponentStatus.UP if usable else ComponentStatus.DOWN,
+            criticality=self.criticality,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            detail=None if usable else "master key cannot open stored key material",
+        )
