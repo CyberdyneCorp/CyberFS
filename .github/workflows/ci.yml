@@ -70,18 +70,9 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: cyberfs
-          MINIO_ROOT_PASSWORD: cyberfs-dev-secret
-          MINIO_DEFAULT_BUCKETS: cyberfs-content
-        ports: ["9000:9000"]
-        options: >-
-          --health-cmd "mc ready local"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+      # MinIO is started as a step below, not as a service container: the
+      # official image needs a `server /data` command, which the `services`
+      # block cannot pass, and Bitnami removed the tag this job used to rely on.
 
     env:
       ENVIRONMENT: test
@@ -107,6 +98,26 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras
+
+      # The official minio image (pinned, same as compose.coolify.yaml) rather
+      # than a service container: it needs a `server` command the services block
+      # cannot supply. The app provisions its own bucket at startup
+      # (ensure_bucket in the lifespan), so no bucket is pre-created here.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=cyberfs \
+            -e MINIO_ROOT_PASSWORD=cyberfs-dev-secret \
+            minio/minio:RELEASE.2024-10-13T13-34-11Z \
+            server /data --console-address ":9001"
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:9000/minio/health/ready >/dev/null; then
+              echo "MinIO ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO did not become ready"; docker logs minio; exit 1
 
       # pg_dump / pg_restore back the MetadataDump adapter; without them the
       # backup/restore round trip (backup-restore/spec.md, "Restore is tested
