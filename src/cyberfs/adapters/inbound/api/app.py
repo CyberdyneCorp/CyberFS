@@ -32,6 +32,7 @@ from cyberfs.adapters.inbound.api.composition import (
     build_key_provider,
     build_object_store,
     build_provisioning,
+    build_s3_authenticator,
     build_sharing,
     disabled_backup_probe,
 )
@@ -182,6 +183,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ),
         region=settings.s3_region,
         clock_skew_seconds=settings.s3_clock_skew_seconds,
+    )
+    # The credential-resolution entry: SigV4 or bearer to a `Principal`, reusing
+    # the REST freshness path. The S3 HTTP routes that call it mount in phase 6.
+    app.state.s3_authentication = build_s3_authenticator(
+        app.state.s3_authenticator, app.state.authentication
     )
     _wire_backup(app, settings)
     app.state.sharing = build_sharing(

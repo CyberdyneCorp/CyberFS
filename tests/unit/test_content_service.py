@@ -188,7 +188,7 @@ async def test_a_viewer_cannot_upload() -> None:
     bob = await provision(uow, "bob")
     svc = content(FakeObjectStore())
     nodes = NodeService(max_tree_depth=64, page_size_max=100)
-    folder = await nodes.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await uow.grants.add(
         Grant(
             id=uuid.uuid4(),
@@ -296,7 +296,7 @@ async def test_a_recipient_is_not_charged_for_someone_elses_file() -> None:
     bob = await provision(uow, "bob")
     svc = content(FakeObjectStore())
     nodes = NodeService(max_tree_depth=64, page_size_max=100)
-    folder = await nodes.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await uow.grants.add(
         Grant(
             id=uuid.uuid4(),

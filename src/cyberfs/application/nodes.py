@@ -34,6 +34,7 @@ from cyberfs.domain.nodes import (
 )
 from cyberfs.domain.permissions import resolve_effective_role
 from cyberfs.domain.ports.repositories import Page, UnitOfWork
+from cyberfs.domain.s3.namespace import SHARED_PREFIX
 from cyberfs.domain.sharing import Role
 from cyberfs.domain.users import User
 
@@ -179,6 +180,7 @@ class NodeService:
         moment = now or utcnow()
         parent, _ = await self._authorize(uow, user, parent_id, Role.EDITOR)
         await self._ensure_folder(parent)
+        _ensure_not_reserved_root_name(parent, name)
         await self._ensure_depth(uow, parent)
 
         node = Node(
@@ -534,6 +536,21 @@ class NodeService:
         existing = await uow.nodes.get_child_by_name(parent_id, normalized_name)
         if existing is not None and existing.id != excluding:
             raise NameTakenError("a sibling already uses that name", parent_id=str(parent_id))
+
+
+def _ensure_not_reserved_root_name(parent: Node, name: str) -> None:
+    """Keep `shared` free at the root of every tree.
+
+    The S3 namespace presents nodes shared *with* the caller under a reserved
+    ``shared/<owner>/…`` prefix; a real folder named `shared` at the root would
+    shadow that view (`s3-compatibility/spec.md`, "The reserved prefix cannot be
+    shadowed"). The name stays legal deeper in the tree -- only the root is
+    reserved -- so the guard is scoped to a root parent.
+    """
+    if parent.is_root and normalize_name(name) == SHARED_PREFIX:
+        raise ValidationError(
+            f"{SHARED_PREFIX!r} is reserved at the root of a tree", parent_id=str(parent.id)
+        )
 
 
 def _ensure_precondition(node: Node, if_match: str | None) -> None:

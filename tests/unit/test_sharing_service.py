@@ -84,7 +84,7 @@ World = tuple[FakeUnitOfWork, User, User, SharingService]
 
 async def test_owner_grants_a_role(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
 
     grant = await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
@@ -95,7 +95,7 @@ async def test_owner_grants_a_role(world: World) -> None:
 
 async def test_the_recipient_can_then_read(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     view = await nodes().get(uow, bob, folder.node.id)
@@ -104,7 +104,7 @@ async def test_the_recipient_can_then_read(world: World) -> None:
 
 async def test_regrant_replaces_rather_than_duplicates(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     first = await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     second = await sharing.grant(uow, alice, folder.node.id, "bob", Role.EDITOR, now=LATER)
@@ -116,7 +116,7 @@ async def test_regrant_replaces_rather_than_duplicates(world: World) -> None:
 
 async def test_a_regrant_can_narrow_a_role(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.OWNER, now=NOW)
 
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=LATER)
@@ -126,14 +126,14 @@ async def test_a_regrant_can_narrow_a_role(world: World) -> None:
 
 async def test_sharing_with_yourself_is_refused(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     with pytest.raises(CannotShareWithSelfError):
         await sharing.grant(uow, alice, folder.node.id, "alice", Role.VIEWER, now=NOW)
 
 
 async def test_an_unknown_recipient_is_refused(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     with pytest.raises(RecipientUnknownError):
         await sharing.grant(uow, alice, folder.node.id, "nobody@example.com", Role.VIEWER, now=NOW)
 
@@ -141,7 +141,7 @@ async def test_an_unknown_recipient_is_refused(world: World) -> None:
 async def test_an_editor_cannot_re_share(world: World) -> None:
     """`sharing/spec.md`: only an owner may widen access."""
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.EDITOR, now=NOW)
 
     with pytest.raises(PermissionDeniedError):
@@ -163,7 +163,7 @@ async def test_email_lookup_is_scoped_to_the_sharers_orgs() -> None:
     await provision(uow, "bob")
     directory = FakeDirectory({"bob@example.com": "bob"})
     sharing = SharingService(directory)
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
 
     await sharing.grant(uow, alice, folder.node.id, "bob@example.com", Role.VIEWER, now=NOW)
 
@@ -172,7 +172,7 @@ async def test_email_lookup_is_scoped_to_the_sharers_orgs() -> None:
 
 async def test_granting_is_audited(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     record = uow.audit.records[-1]
@@ -187,7 +187,7 @@ async def test_granting_is_audited(world: World) -> None:
 
 async def test_a_folder_grant_reaches_future_descendants(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     # Created *after* the grant.
@@ -198,7 +198,7 @@ async def test_a_folder_grant_reaches_future_descendants(world: World) -> None:
 
 async def test_moving_out_of_a_shared_folder_ends_inherited_access(world: World) -> None:
     uow, alice, bob, sharing = world
-    shared = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    shared = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     private = await nodes().create_folder(uow, alice, alice.root_folder_id, "private", now=NOW)
     item = await nodes().create_folder(uow, alice, shared.node.id, "item", now=NOW)
     await sharing.grant(uow, alice, shared.node.id, "bob", Role.VIEWER, now=NOW)
@@ -212,7 +212,7 @@ async def test_moving_out_of_a_shared_folder_ends_inherited_access(world: World)
 
 async def test_moving_into_a_shared_folder_grants_inherited_access(world: World) -> None:
     uow, alice, bob, sharing = world
-    shared = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    shared = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     item = await nodes().create_folder(uow, alice, alice.root_folder_id, "item", now=NOW)
     await sharing.grant(uow, alice, shared.node.id, "bob", Role.VIEWER, now=NOW)
 
@@ -226,7 +226,7 @@ async def test_moving_into_a_shared_folder_grants_inherited_access(world: World)
 
 async def test_revocation_takes_effect_immediately(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     await sharing.revoke(uow, alice, folder.node.id, "bob", now=LATER)
@@ -237,7 +237,7 @@ async def test_revocation_takes_effect_immediately(world: World) -> None:
 
 async def test_a_recipient_may_drop_their_own_access(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
 
     await sharing.revoke(uow, bob, folder.node.id, "bob", now=LATER)
@@ -247,7 +247,7 @@ async def test_a_recipient_may_drop_their_own_access(world: World) -> None:
 
 async def test_a_recipient_cannot_revoke_someone_else(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "carol", Role.VIEWER, now=NOW)
 
@@ -257,7 +257,7 @@ async def test_a_recipient_cannot_revoke_someone_else(world: World) -> None:
 
 async def test_the_owner_cannot_be_revoked(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     with pytest.raises(CannotRevokeOwnerError):
         await sharing.revoke(uow, alice, folder.node.id, "alice", now=LATER)
 
@@ -265,7 +265,7 @@ async def test_the_owner_cannot_be_revoked(world: World) -> None:
 async def test_revoking_a_folder_grant_leaves_an_independent_one(world: World) -> None:
     """`sharing/spec.md`: an independent direct grant survives."""
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     inner = await nodes().create_folder(uow, alice, folder.node.id, "inner", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
     await sharing.grant(uow, alice, inner.node.id, "bob", Role.EDITOR, now=NOW)
@@ -279,14 +279,14 @@ async def test_revoking_a_folder_grant_leaves_an_independent_one(world: World) -
 
 async def test_revoking_a_missing_grant_is_not_found(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     with pytest.raises(NotFoundError):
         await sharing.revoke(uow, alice, folder.node.id, "nobody", now=LATER)
 
 
 async def test_revocation_is_audited(world: World) -> None:
     uow, alice, _, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
     await sharing.revoke(uow, alice, folder.node.id, "bob", now=LATER)
 
@@ -299,7 +299,7 @@ async def test_revocation_is_audited(world: World) -> None:
 async def test_shared_with_me_lists_subtree_roots(world: World) -> None:
     """Not every inherited descendant -- just the root of each share."""
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     inner = await nodes().create_folder(uow, alice, folder.node.id, "inner", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
     await sharing.grant(uow, alice, inner.node.id, "bob", Role.EDITOR, now=NOW)
@@ -316,7 +316,7 @@ async def test_shared_with_me_is_empty_without_grants(world: World) -> None:
 
 async def test_shared_with_me_skips_trashed_nodes(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.VIEWER, now=NOW)
     await nodes().delete(uow, alice, folder.node.id, now=LATER)
 
@@ -325,7 +325,7 @@ async def test_shared_with_me_skips_trashed_nodes(world: World) -> None:
 
 async def test_only_the_owner_may_list_grants(world: World) -> None:
     uow, alice, bob, sharing = world
-    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await nodes().create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await sharing.grant(uow, alice, folder.node.id, "bob", Role.EDITOR, now=NOW)
 
     with pytest.raises(PermissionDeniedError):

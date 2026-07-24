@@ -35,13 +35,19 @@ from cyberfs.application.caching import CacheService
 from cyberfs.application.content import ContentService
 from cyberfs.application.encryption import EncryptionService
 from cyberfs.application.provisioning import ProvisioningService
+from cyberfs.application.s3_auth import S3SignatureVerifier
+from cyberfs.application.s3_authentication import S3Authenticator
 from cyberfs.application.sharing import SharingService
 from cyberfs.domain.auth.policy import CacheWindow, utcnow
 from cyberfs.domain.backup import BackupRecord, is_stale
 from cyberfs.domain.cache import CachePolicy
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
 from cyberfs.domain.ports.backup import BackupRepository
-from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
+from cyberfs.domain.ports.identity import (
+    SubjectIntrospector,
+    TokenIntrospector,
+    TokenVerifier,
+)
 from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure import metrics
@@ -115,6 +121,25 @@ def build_authentication(
             window=AUTH_FAILURE_WINDOW,
         ),
     )
+
+
+def build_s3_authenticator(
+    verifier: S3SignatureVerifier,
+    authentication: AuthenticationService,
+    subject_introspector: SubjectIntrospector | None = None,
+) -> S3Authenticator:
+    """The S3 credential-resolution entry: SigV4 or bearer to a `Principal`.
+
+    Composes the phase-4 signature verifier with the REST authentication
+    service so both credentials reach the same identity and the same freshness
+    path. `subject_introspector` supplies freshness for the tokenless SigV4
+    path -- a key-authenticated grant/revocation/transfer verifies the owning
+    subject at CyberdyneAuth and fails closed on an outage; absent it, such a
+    request fails closed rather than proceeding on the key alone. The S3 HTTP
+    routes that call it (and the fresh operations that need this introspector)
+    mount in a later phase.
+    """
+    return S3Authenticator(verifier, authentication, subject_introspector)
 
 
 class DatabaseHealthProbe:

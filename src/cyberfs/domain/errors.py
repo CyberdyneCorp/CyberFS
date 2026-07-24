@@ -70,6 +70,12 @@ class S3RequestError(PermissionDeniedError):
     code = "s3_error"
     #: The AWS S3 error code phase 6 serialises into the `<Error>` document.
     s3_code = "AccessDenied"
+    #: The HTTP status the S3 `<Error>` document is returned with. Set here so
+    #: the phase-6 XML mapper has an explicit status per error rather than
+    #: re-deriving one, and so members of the family that do not subclass this
+    #: base (a 400 request-shape error, a 404 missing bucket) can still declare
+    #: it via `hasattr(exc, "s3_code")`.
+    s3_status = 403
 
 
 class SignatureMismatchError(S3RequestError):
@@ -102,6 +108,14 @@ class S3AccessDeniedError(S3RequestError):
     s3_code = "AccessDenied"
 
 
+class BucketManagementRefusedError(S3RequestError):
+    """`CreateBucket`/`DeleteBucket`: buckets correspond to users, not clients."""
+
+    code = "bucket_management_refused"
+    title = "Buckets are not client-managed"
+    s3_code = "AccessDenied"
+
+
 # --- lookup ----------------------------------------------------------------
 
 
@@ -113,6 +127,21 @@ class NotFoundError(CyberFSError):
 class RecipientUnknownError(NotFoundError):
     code = "recipient_unknown"
     title = "Recipient is not a known user"
+
+
+class NoSuchBucketError(NotFoundError):
+    """A bucket that is not the caller's own.
+
+    Subclasses `NotFoundError` so a foreign subject's bucket and a bucket that
+    never existed are indistinguishable by construction -- bucket names must not
+    become a user directory (`s3-compatibility/spec.md`, "Another user's bucket
+    is not reachable").
+    """
+
+    code = "no_such_bucket"
+    title = "The specified bucket does not exist"
+    s3_code = "NoSuchBucket"
+    s3_status = 404
 
 
 # --- conflict --------------------------------------------------------------
@@ -154,6 +183,21 @@ class CannotShareWithSelfError(ConflictError):
 class ValidationError(CyberFSError):
     code = "validation_error"
     title = "Request is not valid"
+
+
+class AmbiguousS3CredentialsError(ValidationError):
+    """A request presenting both a SigV4 signature and a bearer token.
+
+    A request-shape error (400), not a permission failure: the caller must
+    choose one credential rather than have the server silently pick
+    (`s3-compatibility/spec.md`, "Both credentials on one request is refused").
+    Carries `s3_code`/`s3_status` so the S3 surface can render it in S3's shape.
+    """
+
+    code = "s3_ambiguous_credentials"
+    title = "Present one credential, not both"
+    s3_code = "InvalidRequest"
+    s3_status = 400
 
 
 class PreconditionFailedError(CyberFSError):

@@ -42,6 +42,28 @@ class TokenIntrospector(Protocol):
         ...
 
 
+class SubjectIntrospector(Protocol):
+    """Verifies a *subject* is still active at CyberdyneAuth, right now.
+
+    The key-authenticated analogue of `TokenIntrospector`. A SigV4 request
+    carries no bearer token to introspect, yet a key-authenticated grant,
+    revocation, or ownership transfer must still reflect the identity plane
+    *now* (`authentication/spec.md`, "Freshness rules still apply" ->
+    "Key-authenticated grants still introspect"): a deactivated owner is
+    refused exactly as a demoted admin's stale token would be. The subject is
+    the freshness key here because that is all a key resolves to.
+    """
+
+    async def introspect_subject(self, subject: str) -> Principal:
+        """Return the subject as the identity plane sees it *right now*.
+
+        Raises `InvalidTokenError` if the subject is no longer active, and
+        `DependencyUnavailableError` if the identity plane cannot be reached --
+        never a fallback to the strength of the key alone.
+        """
+        ...
+
+
 class UserDirectory(Protocol):
     """Resolves a share recipient to a CyberdyneAuth subject.
 

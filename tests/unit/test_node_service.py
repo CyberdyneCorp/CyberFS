@@ -130,6 +130,21 @@ async def test_invalid_names_are_refused(world: World, name: str) -> None:
         await svc.create_folder(uow, user, user.root_folder_id, name, now=NOW)
 
 
+async def test_shared_is_reserved_at_the_root(world: World) -> None:
+    """`s3-compatibility/spec.md`: a real folder cannot shadow the shared view."""
+    uow, user, svc = world
+    with pytest.raises(ValidationError):
+        await svc.create_folder(uow, user, user.root_folder_id, "shared", now=NOW)
+
+
+async def test_shared_is_only_reserved_at_the_root(world: World) -> None:
+    """The reservation is root-scoped: `shared` stays legal deeper in the tree."""
+    uow, user, svc = world
+    parent = await svc.create_folder(uow, user, user.root_folder_id, "docs", now=NOW)
+    child = await svc.create_folder(uow, user, parent.node.id, "shared", now=NOW)
+    assert child.node.name == "shared"
+
+
 async def test_encryption_default_is_recorded(
     world: World,
 ) -> None:
@@ -448,7 +463,7 @@ async def test_editor_cannot_delete() -> None:
     alice = await provision(uow, "alice")
     bob = await provision(uow, "bob")
     svc = service()
-    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await grant(uow, folder.node.id, "bob", Role.EDITOR)
 
     with pytest.raises(PermissionDeniedError):
@@ -580,7 +595,7 @@ async def test_a_folder_grant_reaches_descendants() -> None:
     bob = await provision(uow, "bob")
     svc = service()
 
-    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     leaf = await add_file(uow, alice, "inside.txt", folder.node.id)
     await grant(uow, folder.node.id, "bob", Role.VIEWER)
 
@@ -594,7 +609,7 @@ async def test_the_highest_role_wins() -> None:
     bob = await provision(uow, "bob")
     svc = service()
 
-    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     leaf = await add_file(uow, alice, "inside.txt", folder.node.id)
     await grant(uow, folder.node.id, "bob", Role.VIEWER)
     await grant(uow, leaf.id, "bob", Role.EDITOR)
@@ -608,7 +623,7 @@ async def test_an_ancestor_grant_is_not_narrowed_by_a_lower_direct_grant() -> No
     bob = await provision(uow, "bob")
     svc = service()
 
-    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     leaf = await add_file(uow, alice, "inside.txt", folder.node.id)
     await grant(uow, folder.node.id, "bob", Role.EDITOR)
     await grant(uow, leaf.id, "bob", Role.VIEWER)
@@ -621,7 +636,7 @@ async def test_a_viewer_cannot_write() -> None:
     alice = await provision(uow, "alice")
     bob = await provision(uow, "bob")
     svc = service()
-    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "shared", now=NOW)
+    folder = await svc.create_folder(uow, alice, alice.root_folder_id, "team", now=NOW)
     await grant(uow, folder.node.id, "bob", Role.VIEWER)
 
     with pytest.raises(PermissionDeniedError):

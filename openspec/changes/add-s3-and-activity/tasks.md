@@ -49,16 +49,16 @@
 
 ## 5. S3 authentication and namespace
 
-- [ ] 5.1 Resolve a verified access key to the owning `Principal`, identical to what a bearer token for that user produces
-- [ ] 5.2 Accept a CyberdyneAuth bearer token on the S3 surface, and refuse a request carrying both credentials with `400`
-- [ ] 5.3 Strip administrator status from key-authenticated principals and reject key authentication on admin routes
-- [ ] 5.4 Keep introspection-backed freshness for grants, revocations, and transfers regardless of credential, failing closed on an identity-plane outage
-- [ ] 5.5 Implement the key-to-node mapping: bucket equals the caller's subject, folder path equals key prefix
-- [ ] 5.6 Implement the reserved `shared/<owner-subject>/…` prefix for nodes shared with the caller
-- [ ] 5.7 Reserve the name `shared` at the root of every tree so a real folder cannot shadow the shared view
-- [ ] 5.8 Answer `NoSuchBucket` for another subject's bucket, identically to a bucket that never existed
-- [ ] 5.9 Refuse `CreateBucket` and `DeleteBucket`
-- [ ] 5.10 Unit tests for mapping, the reserved prefix, and cross-user bucket addressing
+- [x] 5.1 Resolve a verified access key to the owning `Principal`, identical to what a bearer token for that user produces
+- [x] 5.2 Accept a CyberdyneAuth bearer token on the S3 surface, and refuse a request carrying both credentials with `400`
+- [x] 5.3 Strip administrator status from key-authenticated principals and reject key authentication on admin routes
+- [x] 5.4 Keep introspection-backed freshness for grants, revocations, and transfers regardless of credential, failing closed on an identity-plane outage
+- [x] 5.5 Implement the key-to-node mapping: bucket equals the caller's subject, folder path equals key prefix
+- [x] 5.6 Implement the reserved `shared/<owner-subject>/…` prefix for nodes shared with the caller
+- [x] 5.7 Reserve the name `shared` at the root of every tree so a real folder cannot shadow the shared view
+- [x] 5.8 Answer `NoSuchBucket` for another subject's bucket, identically to a bucket that never existed
+- [x] 5.9 Refuse `CreateBucket` and `DeleteBucket`
+- [x] 5.10 Unit tests for mapping, the reserved prefix, and cross-user bucket addressing
 
 ## 6. S3 read path
 
