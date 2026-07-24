@@ -5,9 +5,11 @@ Kept out of `app.py` so the factory stays readable as more subsystems land.
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from cyberfs.adapters.outbound.audit_log import LoggingAuditSink
 from cyberfs.adapters.outbound.auth.dev_mode import DevModeVerifier
@@ -15,11 +17,14 @@ from cyberfs.adapters.outbound.auth.discovery import DiscoveryClient
 from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClient
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
 from cyberfs.adapters.outbound.auth.verifier import JwtTokenVerifier
+from cyberfs.adapters.outbound.crypto import MasterKeyProvider
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
+from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.domain.auth.policy import CacheWindow
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
 from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
 from cyberfs.domain.ratelimit import FixedWindowLimiter
+from cyberfs.infrastructure.db import ping
 from cyberfs.infrastructure.settings import Settings
 
 HTTP_TIMEOUT_SECONDS = 10.0
@@ -90,6 +95,26 @@ def build_authentication(
     )
 
 
+class DatabaseHealthProbe:
+    """Postgres is required: without it CyberFS cannot serve any request."""
+
+    name = "postgres"
+    criticality = Criticality.REQUIRED
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def check(self) -> ComponentHealth:
+        started = time.perf_counter()
+        await ping(self._engine)
+        return ComponentHealth(
+            name=self.name,
+            status=ComponentStatus.UP,
+            criticality=self.criticality,
+            latency_ms=(time.perf_counter() - started) * 1000,
+        )
+
+
 class AuthHealthProbe:
     """Reports whether tokens can still be verified.
 
@@ -116,3 +141,13 @@ class AuthHealthProbe:
         return ComponentHealth(
             name=self.name, status=ComponentStatus.UP, criticality=self.criticality
         )
+
+
+def build_provisioning(settings: Settings) -> ProvisioningService:
+    return ProvisioningService(
+        MasterKeyProvider(
+            settings.master_key_bytes,
+            previous=settings.master_key_previous_bytes,
+        ),
+        default_quota_bytes=settings.default_quota_bytes,
+    )

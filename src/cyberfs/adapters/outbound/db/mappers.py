@@ -1,0 +1,297 @@
+"""Translate between persistence rows and domain entities.
+
+Kept separate so the domain never imports SQLAlchemy and the rows never carry
+behaviour.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from cyberfs.adapters.outbound.db import models as m
+from cyberfs.domain.audit import AuditAction, AuditRecord
+from cyberfs.domain.auth.principal import Org
+from cyberfs.domain.keys import UserKey, WrappedDataKey
+from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
+from cyberfs.domain.users import QuotaUsage, User
+
+
+def _org_json(org: Org) -> dict[str, Any]:
+    return {"id": org.id, "short_name": org.short_name, "github_login": org.github_login}
+
+
+def _org_to_json(org: Org | None) -> dict[str, Any] | None:
+    return None if org is None else _org_json(org)
+
+
+def _orgs_to_json(orgs: tuple[Org, ...]) -> list[dict[str, Any]]:
+    return [_org_json(org) for org in orgs]
+
+
+def _org_from_json(raw: Any) -> Org | None:
+    if not isinstance(raw, dict) or not raw.get("id"):
+        return None
+    return Org(
+        id=str(raw["id"]),
+        short_name=str(raw.get("short_name") or ""),
+        github_login=raw.get("github_login"),
+    )
+
+
+def _orgs_from_json(raw: Any) -> tuple[Org, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(org for entry in raw if (org := _org_from_json(entry)) is not None)
+
+
+# --- users -----------------------------------------------------------------
+
+
+def user_to_row(user: User) -> m.UserRow:
+    return m.UserRow(
+        id=user.id,
+        subject=user.subject,
+        root_folder_id=user.root_folder_id,
+        quota_bytes=user.quota_bytes,
+        is_admin=user.is_admin,
+        org=_org_to_json(user.org),
+        orgs=_orgs_to_json(user.orgs),
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        last_seen_at=user.last_seen_at,
+    )
+
+
+def apply_user(row: m.UserRow, user: User) -> None:
+    row.quota_bytes = user.quota_bytes
+    row.is_admin = user.is_admin
+    row.org = _org_to_json(user.org)
+    row.orgs = _orgs_to_json(user.orgs)
+    row.updated_at = user.updated_at
+    row.last_seen_at = user.last_seen_at
+
+
+def user_from_row(row: m.UserRow) -> User:
+    return User(
+        id=row.id,
+        subject=row.subject,
+        root_folder_id=row.root_folder_id,
+        quota_bytes=row.quota_bytes,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        is_admin=row.is_admin,
+        org=_org_from_json(row.org),
+        orgs=_orgs_from_json(row.orgs),
+        last_seen_at=row.last_seen_at,
+    )
+
+
+# --- nodes -----------------------------------------------------------------
+
+
+def node_to_row(node: Node) -> m.NodeRow:
+    return m.NodeRow(
+        id=node.id,
+        owner_id=node.owner_id,
+        parent_id=node.parent_id,
+        kind=str(node.kind),
+        name=node.name,
+        normalized_name=node.normalized_name,
+        revision=node.revision,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+        deleted_at=node.deleted_at,
+        current_version_id=node.current_version_id,
+        size_bytes=node.size_bytes,
+        content_type=node.content_type,
+        encrypted=node.encrypted,
+        encryption_default=str(node.encryption_default),
+    )
+
+
+def apply_node(row: m.NodeRow, node: Node) -> None:
+    row.parent_id = node.parent_id
+    row.name = node.name
+    row.normalized_name = node.normalized_name
+    row.revision = node.revision
+    row.updated_at = node.updated_at
+    row.deleted_at = node.deleted_at
+    row.current_version_id = node.current_version_id
+    row.size_bytes = node.size_bytes
+    row.content_type = node.content_type
+    row.encrypted = node.encrypted
+    row.encryption_default = str(node.encryption_default)
+
+
+def node_from_row(row: m.NodeRow) -> Node:
+    return Node(
+        id=row.id,
+        owner_id=row.owner_id,
+        kind=NodeKind(row.kind),
+        name=row.name,
+        parent_id=row.parent_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        revision=row.revision,
+        deleted_at=row.deleted_at,
+        current_version_id=row.current_version_id,
+        size_bytes=row.size_bytes,
+        content_type=row.content_type,
+        encrypted=row.encrypted,
+        encryption_default=EncryptionDefault(row.encryption_default),
+    )
+
+
+def node_from_mapping(data: dict[str, Any]) -> Node:
+    """Build a node from a raw CTE result row."""
+    return Node(
+        id=data["id"],
+        owner_id=data["owner_id"],
+        kind=NodeKind(data["kind"]),
+        name=data["name"],
+        parent_id=data["parent_id"],
+        created_at=data["created_at"],
+        updated_at=data["updated_at"],
+        revision=data["revision"],
+        deleted_at=data["deleted_at"],
+        current_version_id=data["current_version_id"],
+        size_bytes=data["size_bytes"],
+        content_type=data["content_type"],
+        encrypted=data["encrypted"],
+        encryption_default=EncryptionDefault(data["encryption_default"]),
+    )
+
+
+# --- versions --------------------------------------------------------------
+
+
+def version_to_row(version: FileVersion) -> m.FileVersionRow:
+    return m.FileVersionRow(
+        id=version.id,
+        node_id=version.node_id,
+        owner_id=version.owner_id,
+        sequence=version.sequence,
+        size_bytes=version.size_bytes,
+        plaintext_digest=version.plaintext_digest,
+        content_type=version.content_type,
+        encrypted=version.encrypted,
+        created_at=version.created_at,
+        created_by=version.created_by,
+    )
+
+
+def version_from_row(row: m.FileVersionRow) -> FileVersion:
+    return FileVersion(
+        id=row.id,
+        node_id=row.node_id,
+        owner_id=row.owner_id,
+        sequence=row.sequence,
+        size_bytes=row.size_bytes,
+        plaintext_digest=row.plaintext_digest,
+        content_type=row.content_type,
+        encrypted=row.encrypted,
+        created_at=row.created_at,
+        created_by=row.created_by,
+    )
+
+
+# --- keys ------------------------------------------------------------------
+
+
+def user_key_to_row(key: UserKey) -> m.UserKeyRow:
+    return m.UserKeyRow(
+        user_id=key.user_id,
+        wrapped_kek=key.wrapped_kek,
+        master_key_id=key.master_key_id,
+        created_at=key.created_at,
+        rotated_at=key.rotated_at,
+    )
+
+
+def user_key_from_row(row: m.UserKeyRow) -> UserKey:
+    return UserKey(
+        user_id=row.user_id,
+        wrapped_kek=row.wrapped_kek,
+        master_key_id=row.master_key_id,
+        created_at=row.created_at,
+        rotated_at=row.rotated_at,
+    )
+
+
+def data_key_to_row(key: WrappedDataKey) -> m.WrappedDataKeyRow:
+    return m.WrappedDataKeyRow(
+        id=key.id,
+        node_id=key.node_id,
+        subject=key.subject,
+        wrapped_dek=key.wrapped_dek,
+        created_at=key.created_at,
+    )
+
+
+def data_key_from_row(row: m.WrappedDataKeyRow) -> WrappedDataKey:
+    return WrappedDataKey(
+        id=row.id,
+        node_id=row.node_id,
+        subject=row.subject,
+        wrapped_dek=row.wrapped_dek,
+        created_at=row.created_at,
+    )
+
+
+# --- quota -----------------------------------------------------------------
+
+
+def quota_to_row(usage: QuotaUsage) -> m.QuotaUsageRow:
+    return m.QuotaUsageRow(
+        user_id=usage.user_id,
+        live_bytes=usage.live_bytes,
+        trashed_bytes=usage.trashed_bytes,
+        version_bytes=usage.version_bytes,
+        updated_at=usage.updated_at,
+    )
+
+
+def apply_quota(row: m.QuotaUsageRow, usage: QuotaUsage) -> None:
+    row.live_bytes = usage.live_bytes
+    row.trashed_bytes = usage.trashed_bytes
+    row.version_bytes = usage.version_bytes
+    row.updated_at = usage.updated_at
+
+
+def quota_from_row(row: m.QuotaUsageRow) -> QuotaUsage:
+    return QuotaUsage(
+        user_id=row.user_id,
+        live_bytes=row.live_bytes,
+        trashed_bytes=row.trashed_bytes,
+        version_bytes=row.version_bytes,
+        updated_at=row.updated_at,
+    )
+
+
+# --- audit -----------------------------------------------------------------
+
+
+def audit_to_row(record: AuditRecord) -> m.AuditRow:
+    return m.AuditRow(
+        action=str(record.action),
+        occurred_at=record.occurred_at,
+        actor_subject=record.actor_subject,
+        target_id=record.target_id,
+        recipient_subject=record.recipient_subject,
+        reason=record.reason,
+        source_ip=record.source_ip,
+        context=dict(record.context) or None,
+    )
+
+
+def audit_from_row(row: m.AuditRow) -> AuditRecord:
+    return AuditRecord(
+        action=AuditAction(row.action),
+        occurred_at=row.occurred_at,
+        actor_subject=row.actor_subject,
+        target_id=row.target_id,
+        recipient_subject=row.recipient_subject,
+        reason=row.reason,
+        source_ip=row.source_ip,
+        context=dict(row.context or {}),
+    )

@@ -17,13 +17,17 @@ from cyberfs import __version__
 from cyberfs.adapters.inbound.api import health, metrics
 from cyberfs.adapters.inbound.api.composition import (
     AuthHealthProbe,
+    DatabaseHealthProbe,
     build_authentication,
     build_http_client,
     build_identity,
+    build_provisioning,
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
+from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.health import HealthService
+from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
 from cyberfs.infrastructure.settings import Environment, Settings, get_settings
 
@@ -44,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await app.state.http.aclose()
+        await app.state.engine.dispose()
         logger.info("stopping", version=__version__)
 
 
@@ -65,9 +70,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.health = HealthService()
 
+    app.state.engine = create_engine(settings)
+    app.state.session_factory = create_session_factory(app.state.engine)
+    app.state.unit_of_work = lambda: SqlUnitOfWork(app.state.session_factory)
+    app.state.health.register(DatabaseHealthProbe(app.state.engine))
+
     app.state.http = build_http_client(settings)
     verifier, introspector, discovery = build_identity(settings, app.state.http)
     app.state.authentication = build_authentication(settings, verifier, introspector)
+    app.state.provisioning = build_provisioning(settings)
     app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still

@@ -27,13 +27,13 @@
 
 ## 3. Data model and migrations
 
-- [ ] 3.1 Define domain entities: `User`, `Node` (folder/file discriminator), `FileVersion`, `Grant`, `PublicLink`, `WrappedKey`, `AuditRecord`, `QuotaUsage`
-- [ ] 3.2 Define repository ports in `domain/ports` for nodes, versions, grants, public links, keys, audit, quota, and the Unit of Work
-- [ ] 3.3 Write the SQLAlchemy 2.0 async models: adjacency-list tree with `parent_id`, partial unique index on `(parent_id, normalized_name)` for non-deleted rows, indices for owner lookups, ancestor walks, grant resolution, and trash queries
-- [ ] 3.4 Create the initial Alembic migration and wire migrations-on-boot with an advisory lock so concurrent replicas serialize, and non-zero exit on failure
-- [ ] 3.5 Implement the per-request Unit of Work with transaction boundaries owned by the application layer
-- [ ] 3.6 Implement the recursive-CTE ancestor/descendant queries used by permission resolution and subtree operations, bounded by `MAX_TREE_DEPTH`
-- [ ] 3.7 Implement first-touch user provisioning: create the local user record, root folder, KEK, and default quota on first authenticated request; refresh `org`/`orgs`/`is_admin` from claims; treat a missing `orgs` claim as no org access (moved from 2.8 — depends on the `User` entity and the key provider)
+- [x] 3.1 Define domain entities: `User`, `Node` (folder/file discriminator), `FileVersion`, `Grant`, `PublicLink`, `WrappedKey`, `AuditRecord`, `QuotaUsage`
+- [x] 3.2 Define repository ports in `domain/ports` for nodes, versions, grants, public links, keys, audit, quota, and the Unit of Work
+- [x] 3.3 Write the SQLAlchemy 2.0 async models: adjacency-list tree with `parent_id`, partial unique index on `(parent_id, normalized_name)` for non-deleted rows, indices for owner lookups, ancestor walks, grant resolution, and trash queries
+- [x] 3.4 Create the initial Alembic migration and wire migrations-on-boot with an advisory lock so concurrent replicas serialize, and non-zero exit on failure
+- [x] 3.5 Implement the per-request Unit of Work with transaction boundaries owned by the application layer
+- [x] 3.6 Implement the recursive-CTE ancestor/descendant queries used by permission resolution and subtree operations, bounded by `MAX_TREE_DEPTH`
+- [x] 3.7 Implement first-touch user provisioning: create the local user record, root folder, KEK, and default quota on first authenticated request; refresh `org`/`orgs`/`is_admin` from claims; treat a missing `orgs` claim as no org access (moved from 2.8 — depends on the `User` entity and the key provider)
 
 ## 4. File storage — tree and CRUD
 

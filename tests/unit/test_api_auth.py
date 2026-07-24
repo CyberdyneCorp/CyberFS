@@ -198,12 +198,17 @@ def test_dev_mode_app_serves_without_a_live_auth_service() -> None:
 
 
 def test_dev_mode_reports_auth_as_disabled_not_failing() -> None:
+    """A disabled dependency is not a fault.
+
+    Overall readiness is not asserted here: the app also probes Postgres,
+    which a unit test has no reason to provide.
+    """
     app = create_app(make_settings(auth_dev_mode=True))
     with TestClient(app) as client:
         body = client.get("/health/ready").json()
     auth = next(c for c in body["components"] if c["name"] == "cyberdyne_auth")
     assert auth["status"] == "disabled"
-    assert body["status"] == "ready"
+    assert auth["criticality"] == "optional"
 
 
 @pytest.mark.parametrize("environment", [Environment.STAGING, Environment.PRODUCTION])
