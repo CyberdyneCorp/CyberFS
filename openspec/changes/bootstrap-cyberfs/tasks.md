@@ -121,18 +121,18 @@
 
 ## 10. Admin dashboard (SvelteKit MVVM)
 
-- [ ] 10.1 Scaffold `admin/` with SvelteKit 2 and Svelte 5 runes, matching the CyberdyneAuth admin app's tooling and conventions
-- [ ] 10.2 Implement the single typed API client module as the sole network boundary, with generated or hand-maintained types matching the admin API
-- [ ] 10.3 Implement the CyberdyneAuth login flow: redirect unauthenticated visitors with return-to, transparent token refresh, redirect to login only when refresh fails, access-denied page for authenticated non-admins
-- [ ] 10.4 Implement the overview route with its view model: totals, growth chart over a selectable window, top consumers, encryption adoption
-- [ ] 10.5 Implement the users route with its view model: sortable and filterable list, over-quota and inactive filters, pagination
-- [ ] 10.6 Implement the user detail route with its view model: live/trashed/version byte breakdown, encryption adoption, share counts, quota editing
-- [ ] 10.7 Implement the sharing route with its view model: active public links and admin revocation
-- [ ] 10.8 Implement the audit route with its view model: filters by actor, action, target, and time range
-- [ ] 10.9 Implement the health route with its view model: dependency status, job status, degraded-cache indication
-- [ ] 10.10 Add a lint rule or review-enforced check that `.svelte` files contain no direct HTTP calls and no business logic
-- [ ] 10.11 Unit test every view model headlessly against a mocked API client, covering loading, error, empty, filtering, sorting, and pagination states
-- [ ] 10.12 Add automated accessibility checks across every route, failing on serious or critical violations
+- [x] 10.1 Scaffold `admin/` with SvelteKit 2 and Svelte 5 runes, matching the CyberdyneAuth admin app's tooling and conventions
+- [x] 10.2 Implement the single typed API client module as the sole network boundary, with generated or hand-maintained types matching the admin API
+- [x] 10.3 Implement the CyberdyneAuth login flow: redirect unauthenticated visitors with return-to, transparent token refresh, redirect to login only when refresh fails, access-denied page for authenticated non-admins
+- [x] 10.4 Implement the overview route with its view model: totals, growth chart over a selectable window, top consumers, encryption adoption
+- [x] 10.5 Implement the users route with its view model: sortable and filterable list, over-quota and inactive filters, pagination
+- [x] 10.6 Implement the user detail route with its view model: live/trashed/version byte breakdown, encryption adoption, share counts, quota editing
+- [x] 10.7 Implement the sharing route with its view model: active public links and admin revocation
+- [x] 10.8 Implement the audit route with its view model: filters by actor, action, target, and time range
+- [x] 10.9 Implement the health route with its view model: dependency status, job status, degraded-cache indication
+- [x] 10.10 Add a lint rule or review-enforced check that `.svelte` files contain no direct HTTP calls and no business logic
+- [x] 10.11 Unit test every view model headlessly against a mocked API client, covering loading, error, empty, filtering, sorting, and pagination states
+- [x] 10.12 Add automated accessibility checks across every route, failing on serious or critical violations
 
 ## 11. Backup and restore
 
