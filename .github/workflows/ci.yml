@@ -108,6 +108,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
+      # pg_dump / pg_restore back the MetadataDump adapter; without them the
+      # backup/restore round trip (backup-restore/spec.md, "Restore is tested
+      # automatically") would skip instead of running in CI.
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
       # Migrations arrive with the data model (tasks 3.4). Until then this job
       # has nothing to run; the guard lifts itself as soon as alembic.ini lands
       # rather than needing a workflow edit.

@@ -16,6 +16,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -248,6 +249,37 @@ class QuotaUsageRow(Base):
     trashed_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     version_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     updated_at: Mapped[datetime | None] = mapped_column(TimestampTz, nullable=True)
+
+
+class BackupRecordRow(Base):
+    """Durable history of one backup run.
+
+    Lives in its own table, written outside any request transaction: a backup
+    runs on the scheduler's own session, not a Unit of Work. Failures are kept
+    alongside successes so history can show a run that never succeeded.
+    """
+
+    __tablename__ = "backup_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    started_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(TimestampTz, nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    schema_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    dump_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    object_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skew_missing_in_dump: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skew_missing_in_manifest: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        # Staleness ("latest verified") and history-by-time both read by
+        # state and finish time.
+        Index("ix_backup_records_state_finished", "state", "finished_at"),
+        Index("ix_backup_records_started", "started_at"),
+    )
 
 
 class AuditRow(Base):

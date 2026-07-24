@@ -13,11 +13,11 @@ could carry content, that is a bug in the API, not a feature of this app.
 
 MVVM, enforced by lint rather than convention:
 
-| Layer | Where | Rule |
-|---|---|---|
-| View | `src/routes/**/+page.svelte` | Presentation only. No `fetch`, no filtering, no sorting. |
-| View model | `src/routes/**/*.vm.svelte.ts` | All state, loading, error handling, filtering, sorting, pagination. Depends on the `AdminApi` *interface*. |
-| API | `src/lib/api/` | The only place that touches the network. |
+| Layer      | Where                          | Rule                                                                                                       |
+| ---------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| View       | `src/routes/**/+page.svelte`   | Presentation only. No `fetch`, no filtering, no sorting.                                                   |
+| View model | `src/routes/**/*.vm.svelte.ts` | All state, loading, error handling, filtering, sorting, pagination. Depends on the `AdminApi` _interface_. |
+| API        | `src/lib/api/`                 | The only place that touches the network.                                                                   |
 
 `eslint.config.js` bans `fetch` and imports of `$lib/api/client` inside
 `*.svelte`. Because view models depend on an interface, every one of them is
@@ -55,11 +55,11 @@ verify anything. See `docs/local-auth-setup.md`.
 Read at runtime from `$env/dynamic/public`, so one built image can be pointed at
 any environment — which is how Coolify deploys it.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `PUBLIC_CYBERFS_API_URL` | `http://localhost:8000` | CyberFS API origin |
-| `PUBLIC_CYBERDYNE_AUTH_URL` | `http://localhost:8001` | CyberdyneAuth origin |
-| `PUBLIC_OAUTH_PROVIDER` | `google` | Which provider the sign-in button starts |
+| Variable                    | Default                 | Meaning                                  |
+| --------------------------- | ----------------------- | ---------------------------------------- |
+| `PUBLIC_CYBERFS_API_URL`    | `http://localhost:8000` | CyberFS API origin                       |
+| `PUBLIC_CYBERDYNE_AUTH_URL` | `http://localhost:8001` | CyberdyneAuth origin                     |
+| `PUBLIC_OAUTH_PROVIDER`     | `google`                | Which provider the sign-in button starts |
 
 Both origins must also appear in `connect-src` in `svelte.config.js`, or the
 browser's CSP blocks the requests.

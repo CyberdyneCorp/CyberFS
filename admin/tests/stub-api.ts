@@ -7,6 +7,7 @@ import type { AdminApi } from "$lib/api/endpoints";
 import type {
   AuditPage,
   AuditQuery,
+  BackupSummary,
   LinkList,
   OperationsSummary,
   PublicLink,
@@ -106,6 +107,23 @@ export function anOperations(overrides: Partial<OperationsSummary> = {}): Operat
     ],
     cache: { available: true, keys: 12 },
     totals_reconcile: true,
+    backup: aBackup(),
+    ...overrides,
+  };
+}
+
+export function aBackup(overrides: Partial<BackupSummary> = {}): BackupSummary {
+  return {
+    enabled: true,
+    stale: false,
+    last_backup_at: "2026-07-24T02:00:00Z",
+    last_outcome: "verified",
+    last_duration_seconds: 42,
+    last_size_bytes: 1024 * 1024 * 1024,
+    last_verified: true,
+    last_verified_at: "2026-07-24T02:00:00Z",
+    object_count: 128,
+    schema_revision: "b1f7c0a2d3e4",
     ...overrides,
   };
 }

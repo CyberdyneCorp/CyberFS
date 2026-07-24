@@ -58,6 +58,12 @@ migrate:
 migrate-down:
     uv run alembic downgrade -1
 
+# --- backup / restore --------------------------------------------------
+
+# Restore a named backup. Refuses a non-empty target unless destructive=true.
+restore backup_id destructive="false":
+    uv run python -m cyberfs.restore --backup-id {{backup_id}} {{ if destructive == "true" { "--destructive" } else { "" } }}
+
 migration-status:
     uv run alembic current
 

@@ -22,6 +22,9 @@ from cyberfs.adapters.inbound.api.dependencies import AdminPrincipal, UnitOfWork
 from cyberfs.adapters.inbound.api.health import readiness_components
 from cyberfs.adapters.inbound.api.schemas import (
     AuditPage,
+    BackupList,
+    BackupRecordSummary,
+    BackupSummary,
     JobSummary,
     LinkList,
     OperationsSummary,
@@ -32,8 +35,11 @@ from cyberfs.adapters.inbound.api.schemas import (
     UserStorageSummary,
 )
 from cyberfs.application.admin import AdminService
+from cyberfs.application.backup import BackupService
+from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.cache import Dataset
-from cyberfs.domain.errors import ValidationError
+from cyberfs.domain.errors import ConflictError, NotFoundError, ValidationError
+from cyberfs.infrastructure.scheduler import CronScheduler
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -187,7 +193,58 @@ async def operations(
         jobs=[JobSummary.of(status) for status in service.job_statuses()],
         cache=await request.app.state.cache.stats(),
         totals_reconcile=await service.reconciles(uow),
+        backup=await _backup_summary(request),
     )
+
+
+def _backup_service(request: Request) -> BackupService | None:
+    service: BackupService | None = getattr(request.app.state, "backup", None)
+    return service
+
+
+async def _backup_summary(request: Request) -> BackupSummary:
+    settings = request.app.state.settings
+    backup = _backup_service(request)
+    records = await backup.list_backups() if backup is not None else ()
+    return BackupSummary.of(
+        records,
+        enabled=settings.backup_enabled,
+        max_age_hours=settings.backup_max_age_hours,
+        now=utcnow(),
+    )
+
+
+@router.post(
+    "/operations/backup",
+    response_model=BackupRecordSummary,
+    summary="Trigger a backup by hand",
+)
+async def trigger_backup(
+    request: Request, principal: AdminPrincipal, uow: UnitOfWorkDep
+) -> BackupRecordSummary:
+    """Run a backup now, with the same procedure and overlap guard as a
+    scheduled one. Refused when backups are disabled, and 409 when a run is
+    already in flight (`backup-restore/spec.md`, "Manual run")."""
+    scheduler: CronScheduler | None = getattr(request.app.state, "backup_scheduler", None)
+    job = getattr(request.app.state, "backup_job", None)
+    if scheduler is None or job is None:
+        raise ValidationError("backups are disabled")
+    ran = await scheduler.trigger()
+    if not ran:
+        raise ConflictError("a backup is already running")
+    await _service(request).note_backup_triggered(uow, principal.subject)
+    await uow.commit()
+    if job.last_record is None:  # pragma: no cover -- set by a completed run
+        raise NotFoundError("backup produced no record")
+    return BackupRecordSummary.of(job.last_record)
+
+
+@router.get("/operations/backups", response_model=BackupList, summary="List backups")
+async def list_backups(request: Request, principal: AdminPrincipal) -> BackupList:
+    """History by timestamp, verification state, size, and schema revision."""
+    backup = _backup_service(request)
+    records = await backup.list_backups() if backup is not None else ()
+    return BackupList.of(records)
 
 
 @router.post(

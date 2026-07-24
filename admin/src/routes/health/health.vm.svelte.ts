@@ -5,7 +5,12 @@
 // slower, never wrong, and the page must say so rather than showing red.
 
 import type { AdminApi } from "$lib/api/endpoints";
-import type { HealthComponent, JobSummary, OperationsSummary } from "$lib/api/types";
+import type {
+  BackupSummary,
+  HealthComponent,
+  JobSummary,
+  OperationsSummary,
+} from "$lib/api/types";
 import { describeError } from "$lib/errors";
 
 export type Overall = "healthy" | "degraded" | "unhealthy" | "unknown";
@@ -25,6 +30,9 @@ export interface HealthVM {
   readonly degraded: HealthComponent[];
   readonly staleJobs: JobSummary[];
   readonly cacheAvailable: boolean;
+  readonly backup: BackupSummary | null;
+  /** Backups are configured but no verified run is recent enough — worth an alert. */
+  readonly backupStale: boolean;
   load(): Promise<void>;
   purge(dataset: string): Promise<void>;
 }
@@ -65,6 +73,10 @@ export function createHealthVM(api: AdminApi): HealthVM {
   // the scheduler is not wired, which is easy to miss.
   const staleJobs = $derived((state.data?.jobs ?? []).filter((job) => !job.has_run));
   const cacheAvailable = $derived(Boolean(state.data?.cache?.available));
+  const backup = $derived(state.data?.backup ?? null);
+  // Only alarming when backups are enabled: a deployment that has opted out is
+  // not "stale", it is deliberately off.
+  const backupStale = $derived(Boolean(backup?.enabled && backup?.stale));
 
   async function load(): Promise<void> {
     state.loading = true;
@@ -111,6 +123,12 @@ export function createHealthVM(api: AdminApi): HealthVM {
     },
     get cacheAvailable() {
       return cacheAvailable;
+    },
+    get backup() {
+      return backup;
+    },
+    get backupStale() {
+      return backupStale;
     },
     load,
     purge,

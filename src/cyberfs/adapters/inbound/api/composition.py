@@ -6,13 +6,14 @@ Kept out of `app.py` so the factory stays readable as more subsystems land.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
-from datetime import timedelta
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 import httpx
 import redis.asyncio as aioredis
 from minio import Minio
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from cyberfs.adapters.outbound.audit_log import LoggingAuditSink
 from cyberfs.adapters.outbound.auth.dev_mode import DevModeVerifier
@@ -21,23 +22,31 @@ from cyberfs.adapters.outbound.auth.discovery import DiscoveryClient
 from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClient
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
 from cyberfs.adapters.outbound.auth.verifier import JwtTokenVerifier
+from cyberfs.adapters.outbound.backup.pg_dump import PgDumpMetadataDump
 from cyberfs.adapters.outbound.cache.redis_cache import RedisCache
 from cyberfs.adapters.outbound.cipher import AesGcmContentCipher
 from cyberfs.adapters.outbound.crypto import MasterKeyProvider
+from cyberfs.adapters.outbound.db.backup_repository import SqlBackupRepository
 from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
+from cyberfs.application.admin import JobStatusRegistry
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
+from cyberfs.application.backup import BackupService
 from cyberfs.application.caching import CacheService
 from cyberfs.application.content import ContentService
 from cyberfs.application.encryption import EncryptionService
 from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.application.sharing import SharingService
-from cyberfs.domain.auth.policy import CacheWindow
+from cyberfs.domain.auth.policy import CacheWindow, utcnow
+from cyberfs.domain.backup import BackupRecord, is_stale
 from cyberfs.domain.cache import CachePolicy
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
+from cyberfs.domain.ports.backup import BackupRepository
 from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
 from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.ratelimit import FixedWindowLimiter
+from cyberfs.infrastructure import metrics
 from cyberfs.infrastructure.db import ping
+from cyberfs.infrastructure.scheduler import CronScheduler
 from cyberfs.infrastructure.settings import Settings
 
 HTTP_TIMEOUT_SECONDS = 10.0
@@ -331,3 +340,189 @@ class CacheHealthProbe:
             latency_ms=(time.perf_counter() - started) * 1000,
             detail=None if usable else "cache unreachable; serving from Postgres",
         )
+
+
+# --- backup ----------------------------------------------------------------
+
+
+def build_backup_object_store(settings: Settings) -> MinioObjectStore:
+    """A second store pointed at `BACKUP_S3_*`, distinct from the primary.
+
+    Startup validation (`Settings._validate_backup_target`) has already refused
+    a target identical to the primary endpoint+bucket, so this cannot be aimed
+    back at the content bucket by accident.
+    """
+    if (
+        settings.backup_s3_endpoint is None
+        or settings.backup_s3_access_key is None
+        or settings.backup_s3_secret_key is None
+        or settings.backup_s3_bucket is None
+    ):
+        raise ValueError("BACKUP_S3_* must be configured when backups are enabled")
+    return MinioObjectStore(
+        Minio(
+            settings.backup_s3_endpoint,
+            access_key=settings.backup_s3_access_key.get_secret_value(),
+            secret_key=settings.backup_s3_secret_key.get_secret_value(),
+            secure=settings.minio_secure,
+            region=settings.minio_region,
+        ),
+        settings.backup_s3_bucket,
+        part_bytes=settings.upload_chunk_bytes,
+    )
+
+
+def build_backup_service(
+    settings: Settings,
+    *,
+    engine: AsyncEngine,
+    source_store: ObjectStore,
+    repository: BackupRepository,
+) -> BackupService:
+    return BackupService(
+        metadata_dump=PgDumpMetadataDump(engine, settings.database_url),
+        source_store=source_store,
+        backup_store=build_backup_object_store(settings),
+        repository=repository,
+        keep_daily=settings.backup_keep_daily,
+        keep_weekly=settings.backup_keep_weekly,
+        keep_monthly=settings.backup_keep_monthly,
+        failed_grace_hours=settings.backup_failed_grace_hours,
+        verify_sample_count=settings.backup_verify_sample_count,
+        history_days=settings.backup_history_days,
+    )
+
+
+def _emit_backup_metrics(record: BackupRecord) -> None:
+    """Translate a finished backup record into the Prometheus instruments."""
+    outcome = "verified" if record.is_verified else "failed"
+    metrics.backup_runs_total.labels(outcome=outcome).inc()
+    if record.duration_seconds is not None:
+        metrics.backup_duration_seconds.observe(record.duration_seconds)
+    if record.is_verified:
+        metrics.backup_bytes_total.inc(record.total_bytes)
+        if record.finished_at is not None:
+            metrics.backup_last_success_timestamp.set(record.finished_at.timestamp())
+
+
+class BackupJob:
+    """One scheduled (or manually triggered) backup, with its side effects.
+
+    Wraps `BackupService.run` so the pipeline itself stays free of metrics and
+    the job registry: this records the outcome for the operations view, emits
+    the metrics, prunes on success, and remembers the last record so the manual
+    trigger endpoint can return it.
+    """
+
+    def __init__(self, service: BackupService, jobs: JobStatusRegistry) -> None:
+        self._service = service
+        self._jobs = jobs
+        self.last_record: BackupRecord | None = None
+
+    async def run(self) -> None:
+        record = await self._service.run()
+        self.last_record = record
+        self._jobs.record(
+            "backup",
+            outcome="success" if record.is_verified else "failed",
+            duration_seconds=record.duration_seconds or 0.0,
+            detail=record.error,
+        )
+        _emit_backup_metrics(record)
+        if record.is_verified:
+            await self._service.apply_retention()
+
+    async def on_skip(self) -> None:
+        """A run that fired while another was in flight -- recorded, not started."""
+        metrics.backup_runs_total.labels(outcome="skipped").inc()
+        self._jobs.record("backup", outcome="skipped", duration_seconds=0.0, detail="overlap")
+
+
+class BackupHealthProbe:
+    """Backup freshness for the operations view.
+
+    Optional by design: a stale or failed backup degrades readiness and raises
+    an alert-level condition, but does not take the replica out of rotation.
+    When `BACKUP_ENABLED` is false it reports DISABLED -- a deliberately
+    switched-off backup is not a fault (`backup-restore/spec.md`).
+    """
+
+    name = "backup"
+    criticality = Criticality.OPTIONAL
+
+    def __init__(
+        self,
+        repository: BackupRepository | None,
+        *,
+        enabled: bool,
+        max_age_hours: int,
+        clock: Callable[[], datetime] = utcnow,
+    ) -> None:
+        self._repository = repository
+        self._enabled = enabled
+        self._max_age_hours = max_age_hours
+        self._clock = clock
+
+    async def check(self) -> ComponentHealth:
+        if not self._enabled or self._repository is None:
+            return ComponentHealth(
+                name=self.name,
+                status=ComponentStatus.DISABLED,
+                criticality=self.criticality,
+                detail="BACKUP_ENABLED=false",
+            )
+        latest = await self._repository.latest_verified()
+        last_at = latest.finished_at if latest is not None else None
+        stale = is_stale(last_at, max_age_hours=self._max_age_hours, now=self._clock())
+        return ComponentHealth(
+            name=self.name,
+            status=ComponentStatus.DOWN if stale else ComponentStatus.UP,
+            criticality=self.criticality,
+            detail=self._detail(latest, stale),
+        )
+
+    def _detail(self, latest: BackupRecord | None, stale: bool) -> str | None:
+        if latest is None:
+            return f"no verified backup within {self._max_age_hours}h"
+        if stale:
+            return f"last verified backup at {latest.finished_at:%Y-%m-%dT%H:%M:%SZ} is stale"
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class BackupWiring:
+    """The backup subsystem, assembled once so `app.py` can start/stop it."""
+
+    service: BackupService
+    scheduler: CronScheduler
+    job: BackupJob
+    probe: BackupHealthProbe
+
+
+def build_backup(
+    settings: Settings,
+    *,
+    engine: AsyncEngine,
+    source_store: ObjectStore,
+    session_factory: async_sessionmaker[AsyncSession],
+    jobs: JobStatusRegistry,
+) -> BackupWiring | None:
+    """Assemble the backup subsystem, or None when backups are disabled.
+
+    When disabled, the caller registers `disabled_backup_probe` and starts
+    nothing -- the clean no-op `backup-restore/spec.md` requires.
+    """
+    if not settings.backup_enabled:
+        return None
+    repository = SqlBackupRepository(session_factory)
+    service = build_backup_service(
+        settings, engine=engine, source_store=source_store, repository=repository
+    )
+    job = BackupJob(service, jobs)
+    scheduler = CronScheduler(settings.backup_cron, job.run, name="backup", on_skip=job.on_skip)
+    probe = BackupHealthProbe(repository, enabled=True, max_age_hours=settings.backup_max_age_hours)
+    return BackupWiring(service=service, scheduler=scheduler, job=job, probe=probe)
+
+
+def disabled_backup_probe(settings: Settings) -> BackupHealthProbe:
+    return BackupHealthProbe(None, enabled=False, max_age_hours=settings.backup_max_age_hours)

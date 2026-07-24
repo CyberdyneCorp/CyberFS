@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 REGISTRY = CollectorRegistry(auto_describe=True)
 
@@ -108,6 +108,33 @@ job_duration_seconds = Histogram(
     "cyberfs_job_duration_seconds",
     "Background job duration by job.",
     labelnames=("job",),
+    registry=REGISTRY,
+)
+
+# --- backup ----------------------------------------------------------------
+
+backup_runs_total = Counter(
+    "cyberfs_backup_runs_total",
+    "Backup runs by outcome (verified, failed, skipped).",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+
+backup_duration_seconds = Histogram(
+    "cyberfs_backup_duration_seconds",
+    "Backup run duration.",
+    registry=REGISTRY,
+)
+
+backup_bytes_total = Counter(
+    "cyberfs_backup_bytes_total",
+    "Content bytes mirrored to the backup target by verified backups.",
+    registry=REGISTRY,
+)
+
+backup_last_success_timestamp = Gauge(
+    "cyberfs_backup_last_success_timestamp",
+    "Unix time of the last verified backup; drives the staleness alert.",
     registry=REGISTRY,
 )
 

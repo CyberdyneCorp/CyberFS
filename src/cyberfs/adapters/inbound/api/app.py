@@ -22,6 +22,7 @@ from cyberfs.adapters.inbound.api.composition import (
     EncryptionHealthProbe,
     ObjectStoreHealthProbe,
     build_authentication,
+    build_backup,
     build_cache,
     build_content,
     build_encryption,
@@ -31,6 +32,7 @@ from cyberfs.adapters.inbound.api.composition import (
     build_object_store,
     build_provisioning,
     build_sharing,
+    disabled_backup_probe,
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
@@ -60,12 +62,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         auth_dev_mode=settings.auth_dev_mode,
     )
     await _provision_bucket(app)
+    scheduler = app.state.backup_scheduler
+    if scheduler is not None:
+        await scheduler.start()
+        logger.info("backup_scheduler_started", cron=settings.backup_cron)
     try:
         yield
     finally:
+        if scheduler is not None:
+            await scheduler.stop()
         await app.state.http.aclose()
         await app.state.engine.dispose()
         logger.info("stopping", version=__version__)
+
+
+def _wire_backup(app: FastAPI, settings: Settings) -> None:
+    """Assemble the backup subsystem and register its health probe.
+
+    The scheduler is only *started* in the lifespan (it needs a running loop);
+    here it is merely constructed. When backups are disabled the probe is
+    registered in a DISABLED state and nothing is scheduled -- the clean no-op
+    `backup-restore/spec.md` requires.
+    """
+    wiring = build_backup(
+        settings,
+        engine=app.state.engine,
+        source_store=app.state.objects,
+        session_factory=app.state.session_factory,
+        jobs=app.state.admin.jobs,
+    )
+    if wiring is None:
+        app.state.backup = None
+        app.state.backup_job = None
+        app.state.backup_scheduler = None
+        app.state.health.register(disabled_backup_probe(settings))
+        return
+    app.state.backup = wiring.service
+    app.state.backup_job = wiring.job
+    app.state.backup_scheduler = wiring.scheduler
+    app.state.health.register(wiring.probe)
 
 
 async def _provision_bucket(app: FastAPI) -> None:
@@ -122,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.content = build_content(settings, app.state.objects, app.state.encryption)
     app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
     app.state.admin = AdminService(show_filenames=settings.admin_show_filenames)
+    _wire_backup(app, settings)
     app.state.sharing = build_sharing(
         settings, app.state.http, app.state.encryption, app.state.cache
     )

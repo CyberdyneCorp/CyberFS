@@ -255,6 +255,16 @@ class AdminService:
             "grant management belongs to the node owner, not to administrators"
         )
 
+    async def note_backup_triggered(self, uow: UnitOfWork, actor: str) -> None:
+        """Record that an administrator started a backup by hand."""
+        await uow.audit.add(
+            AuditRecord(
+                action=AuditAction.BACKUP_TRIGGERED,
+                occurred_at=utcnow(),
+                actor_subject=actor,
+            )
+        )
+
     async def note_cache_purged(self, uow: UnitOfWork, actor: str, dataset: str) -> None:
         await uow.audit.add(
             AuditRecord(

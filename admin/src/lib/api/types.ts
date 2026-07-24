@@ -110,11 +110,25 @@ export interface JobSummary {
   has_run: boolean;
 }
 
+export interface BackupSummary {
+  enabled: boolean;
+  stale: boolean;
+  last_backup_at: string | null;
+  last_outcome: string | null;
+  last_duration_seconds: number | null;
+  last_size_bytes: number | null;
+  last_verified: boolean | null;
+  last_verified_at: string | null;
+  object_count: number | null;
+  schema_revision: string | null;
+}
+
 export interface OperationsSummary {
   components: HealthComponent[];
   jobs: JobSummary[];
   cache: Record<string, unknown>;
   totals_reconcile: boolean;
+  backup: BackupSummary;
 }
 
 export interface PurgeResponse {

@@ -15,7 +15,7 @@ import {
   parseQuota,
 } from "../src/routes/users/[userId]/user-detail.vm.svelte";
 import { createUsersVM, isInactive } from "../src/routes/users/users.vm.svelte";
-import { aLink, aTenant, aUser, anOperations, createStubApi } from "./stub-api";
+import { aBackup, aLink, aTenant, aUser, anOperations, createStubApi } from "./stub-api";
 
 // --- overview --------------------------------------------------------------
 
@@ -598,6 +598,33 @@ describe("health view model", () => {
     expect(vm.state.notice).toContain("3 perm");
     // Refreshed so the key count reflects the purge.
     expect(api.calls.filter((c) => c === "operations")).toHaveLength(2);
+  });
+
+  it("surfaces the backup summary", async () => {
+    const vm = createHealthVM(createStubApi());
+    await vm.load();
+    expect(vm.backup?.last_verified).toBe(true);
+    expect(vm.backupStale).toBe(false);
+  });
+
+  it("flags a stale backup only when backups are enabled", async () => {
+    const api = createStubApi({
+      operations: async () => anOperations({ backup: aBackup({ enabled: true, stale: true }) }),
+    });
+    const vm = createHealthVM(api);
+    await vm.load();
+    expect(vm.backupStale).toBe(true);
+  });
+
+  it("does not flag a disabled backup as stale", async () => {
+    // Opting out of backups is a deliberate choice, not an alert condition.
+    const api = createStubApi({
+      operations: async () =>
+        anOperations({ backup: aBackup({ enabled: false, stale: true }) }),
+    });
+    const vm = createHealthVM(api);
+    await vm.load();
+    expect(vm.backupStale).toBe(false);
   });
 
   it("reports a purge failure", async () => {

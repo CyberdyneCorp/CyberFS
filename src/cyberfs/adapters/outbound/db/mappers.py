@@ -11,6 +11,7 @@ from typing import Any
 from cyberfs.adapters.outbound.db import models as m
 from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.principal import Org
+from cyberfs.domain.backup import BackupRecord, BackupState
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
 from cyberfs.domain.sharing import Grant, PublicLink, Role
@@ -297,6 +298,54 @@ def audit_from_row(row: m.AuditRow) -> AuditRecord:
         reason=row.reason,
         source_ip=row.source_ip,
         context=dict(row.context or {}),
+    )
+
+
+# --- backups ---------------------------------------------------------------
+
+
+def backup_record_to_row(record: BackupRecord) -> m.BackupRecordRow:
+    return m.BackupRecordRow(
+        id=record.id,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+        state=str(record.state),
+        schema_revision=record.schema_revision,
+        dump_checksum=record.dump_checksum,
+        object_count=record.object_count,
+        total_bytes=record.total_bytes,
+        duration_seconds=record.duration_seconds,
+        skew_missing_in_dump=record.skew_missing_in_dump,
+        skew_missing_in_manifest=record.skew_missing_in_manifest,
+        error=record.error,
+    )
+
+
+def apply_backup_record(row: m.BackupRecordRow, record: BackupRecord) -> None:
+    row.finished_at = record.finished_at
+    row.state = str(record.state)
+    row.dump_checksum = record.dump_checksum
+    row.object_count = record.object_count
+    row.total_bytes = record.total_bytes
+    row.duration_seconds = record.duration_seconds
+    row.skew_missing_in_dump = record.skew_missing_in_dump
+    row.skew_missing_in_manifest = record.skew_missing_in_manifest
+    row.error = record.error
+
+
+def backup_record_from_row(row: m.BackupRecordRow) -> BackupRecord:
+    return BackupRecord(
+        id=row.id,
+        started_at=row.started_at,
+        state=BackupState(row.state),
+        schema_revision=row.schema_revision,
+        finished_at=row.finished_at,
+        dump_checksum=row.dump_checksum,
+        object_count=row.object_count,
+        total_bytes=row.total_bytes,
+        skew_missing_in_dump=row.skew_missing_in_dump,
+        skew_missing_in_manifest=row.skew_missing_in_manifest,
+        error=row.error,
     )
 
 

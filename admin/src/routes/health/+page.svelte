@@ -2,7 +2,7 @@
   import { api } from "$lib/app";
   import LoadState from "$lib/components/LoadState.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
-  import { formatDateTime, formatDuration } from "$lib/format";
+  import { formatBytes, formatDateTime, formatDuration, formatRelative } from "$lib/format";
   import { createHealthVM, type Overall } from "./health.vm.svelte";
 
   const vm = createHealthVM(api());
@@ -169,5 +169,81 @@
         </div>
       </div>
     </section>
+
+    {#if vm.backup}
+      <section class="section">
+        <h2>Backup</h2>
+        {#if vm.backupStale}
+          <p class="notice error" role="alert">
+            No verified backup has completed recently. The last good backup is older than the
+            configured maximum age — check the backup job and its target.
+          </p>
+        {/if}
+        <div class="card">
+          {#if !vm.backup.enabled}
+            <p>
+              Backups are <span class="pill">disabled</span>. This deployment has intentionally
+              opted out; nothing is being backed up.
+            </p>
+          {:else if !vm.backup.last_backup_at}
+            <p>
+              Backups are <span class="pill ok">enabled</span>, but none has run yet.
+            </p>
+          {:else}
+            <p>
+              Last backup {formatRelative(vm.backup.last_backup_at)}
+              <span
+                class="pill {vm.backup.last_verified
+                  ? 'ok'
+                  : vm.backup.last_outcome === 'running'
+                    ? 'warn'
+                    : 'danger'}"
+              >
+                {vm.backup.last_verified ? "verified" : (vm.backup.last_outcome ?? "unknown")}
+              </span>
+            </p>
+            <div class="table-wrap">
+              <table>
+                <caption>Most recent backup</caption>
+                <tbody>
+                  <tr>
+                    <th scope="row">Completed</th>
+                    <td>{formatDateTime(vm.backup.last_backup_at)}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Outcome</th>
+                    <td>{vm.backup.last_outcome ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Duration</th>
+                    <td>{formatDuration(vm.backup.last_duration_seconds)}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Size</th>
+                    <td>
+                      {vm.backup.last_size_bytes === null
+                        ? "—"
+                        : formatBytes(vm.backup.last_size_bytes)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Objects</th>
+                    <td>{vm.backup.object_count?.toLocaleString() ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Schema revision</th>
+                    <td>{vm.backup.schema_revision ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Last verified</th>
+                    <td>{formatDateTime(vm.backup.last_verified_at)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
+      </section>
+    {/if}
   {/if}
 </LoadState>

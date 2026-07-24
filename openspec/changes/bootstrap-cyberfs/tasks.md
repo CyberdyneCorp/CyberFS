@@ -136,20 +136,20 @@
 
 ## 11. Backup and restore
 
-- [ ] 11.1 Implement the backup job: consistent `pg_dump` of all application tables plus `mc mirror` of the content bucket to the configured S3-compatible target
-- [ ] 11.2 Implement startup validation rejecting a backup target identical to the primary MinIO endpoint and bucket
-- [ ] 11.3 Implement the manifest: every object key with size and checksum, the dump checksum, and the schema migration revision
-- [ ] 11.4 Implement verification confirming the dump checksum and sampling at least `BACKUP_VERIFY_SAMPLE_COUNT` objects, marking the backup failed on any mismatch and emitting an alert
-- [ ] 11.5 Implement dump/mirror skew detection reported in the backup record
-- [ ] 11.6 Implement scheduling on `BACKUP_CRON`, admin-triggered manual runs, overlap prevention, and clean disablement via `BACKUP_ENABLED`
-- [ ] 11.7 Implement retention over `BACKUP_KEEP_DAILY`/`WEEKLY`/`MONTHLY`, never deleting the last verified backup, and pruning failed artifacts after `BACKUP_FAILED_GRACE_HOURS`
-- [ ] 11.8 Implement the scripted restore: load the dump, apply migrations to the recorded revision and report the upgrade path, mirror objects into the target bucket, succeed only when readiness passes, and refuse a non-empty target without an explicit destructive flag
-- [ ] 11.9 Implement backup listing by timestamp, verification state, size, and schema revision
-- [ ] 11.10 Implement `key_unavailable` degradation when restoring without the correct `MASTER_KEY`, keeping unencrypted files readable and the service not-healthy
-- [ ] 11.11 Add a test asserting no backup artifact contains `MASTER_KEY` in any form
-- [ ] 11.12 Implement backup observability: status on the health view, staleness alert past `BACKUP_MAX_AGE_HOURS`, failure metrics and error logs, history over `BACKUP_HISTORY_DAYS`
-- [ ] 11.13 Write the restore runbook documenting `MASTER_KEY` custody as a prerequisite and where it is held
-- [ ] 11.14 Implement the CI backup/restore round-trip integration test: seed encrypted and unencrypted files, multiple versions, shares, and trashed nodes; back up; restore into a scratch stack; assert byte-level fidelity and that nothing is silently missing
+- [x] 11.1 Implement the backup job: consistent `pg_dump` of all application tables plus `mc mirror` of the content bucket to the configured S3-compatible target
+- [x] 11.2 Implement startup validation rejecting a backup target identical to the primary MinIO endpoint and bucket
+- [x] 11.3 Implement the manifest: every object key with size and checksum, the dump checksum, and the schema migration revision
+- [x] 11.4 Implement verification confirming the dump checksum and sampling at least `BACKUP_VERIFY_SAMPLE_COUNT` objects, marking the backup failed on any mismatch and emitting an alert
+- [x] 11.5 Implement dump/mirror skew detection reported in the backup record
+- [x] 11.6 Implement scheduling on `BACKUP_CRON`, admin-triggered manual runs, overlap prevention, and clean disablement via `BACKUP_ENABLED`
+- [x] 11.7 Implement retention over `BACKUP_KEEP_DAILY`/`WEEKLY`/`MONTHLY`, never deleting the last verified backup, and pruning failed artifacts after `BACKUP_FAILED_GRACE_HOURS`
+- [x] 11.8 Implement the scripted restore: load the dump, apply migrations to the recorded revision and report the upgrade path, mirror objects into the target bucket, succeed only when readiness passes, and refuse a non-empty target without an explicit destructive flag
+- [x] 11.9 Implement backup listing by timestamp, verification state, size, and schema revision
+- [x] 11.10 Implement `key_unavailable` degradation when restoring without the correct `MASTER_KEY`, keeping unencrypted files readable and the service not-healthy
+- [x] 11.11 Add a test asserting no backup artifact contains `MASTER_KEY` in any form
+- [x] 11.12 Implement backup observability: status on the health view, staleness alert past `BACKUP_MAX_AGE_HOURS`, failure metrics and error logs, history over `BACKUP_HISTORY_DAYS`
+- [x] 11.13 Write the restore runbook documenting `MASTER_KEY` custody as a prerequisite and where it is held
+- [x] 11.14 Implement the CI backup/restore round-trip integration test: seed encrypted and unencrypted files, multiple versions, shares, and trashed nodes; back up; restore into a scratch stack; assert byte-level fidelity and that nothing is silently missing
 
 ## 12. Deployment
 

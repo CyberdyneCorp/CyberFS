@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cyberfs.application.nodes import NodeView
 from cyberfs.domain.audit import AuditRecord
+from cyberfs.domain.backup import BackupRecord, is_stale
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.sharing import Grant, PublicLink
@@ -435,6 +436,107 @@ class JobSummary(BaseModel):
         )
 
 
+class BackupRecordSummary(BaseModel):
+    """One backup run for the operations listing.
+
+    Metadata about the run only -- checksums and counts, never key material or
+    an object key. A backup identified by timestamp, verification state, size,
+    and schema revision, as `backup-restore/spec.md` requires for point-in-time
+    selection.
+    """
+
+    id: uuid.UUID
+    started_at: datetime
+    finished_at: datetime | None
+    state: str
+    verified: bool
+    dump_checksum: str | None
+    object_count: int
+    total_bytes: int
+    schema_revision: str
+    duration_seconds: float | None
+    skew_missing_in_dump: int
+    skew_missing_in_manifest: int
+    has_skew: bool
+    error: str | None
+
+    @classmethod
+    def of(cls, record: BackupRecord) -> BackupRecordSummary:
+        return cls(
+            id=record.id,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+            state=str(record.state),
+            verified=record.is_verified,
+            dump_checksum=record.dump_checksum,
+            object_count=record.object_count,
+            total_bytes=record.total_bytes,
+            schema_revision=record.schema_revision,
+            duration_seconds=record.duration_seconds,
+            skew_missing_in_dump=record.skew_missing_in_dump,
+            skew_missing_in_manifest=record.skew_missing_in_manifest,
+            has_skew=record.has_skew,
+            error=record.error,
+        )
+
+
+class BackupList(BaseModel):
+    items: list[BackupRecordSummary]
+
+    @classmethod
+    def of(cls, records: tuple[BackupRecord, ...]) -> BackupList:
+        return cls(items=[BackupRecordSummary.of(r) for r in records])
+
+
+class BackupSummary(BaseModel):
+    """The backup subsystem's state for the operations view.
+
+    Surfaces the last run's time, outcome, duration, size, and verification,
+    plus a staleness alert flag raised when no verified backup has completed
+    within `BACKUP_MAX_AGE_HOURS` (`backup-restore/spec.md`, "Backup
+    observability").
+    """
+
+    enabled: bool
+    stale: bool
+    last_backup_at: datetime | None = None
+    last_outcome: str | None = None
+    last_duration_seconds: float | None = None
+    last_size_bytes: int | None = None
+    last_verified: bool | None = None
+    last_verified_at: datetime | None = None
+    object_count: int | None = None
+    schema_revision: str | None = None
+
+    @classmethod
+    def of(
+        cls,
+        records: tuple[BackupRecord, ...],
+        *,
+        enabled: bool,
+        max_age_hours: int,
+        now: datetime,
+    ) -> BackupSummary:
+        latest = records[0] if records else None
+        latest_verified = next((r for r in records if r.is_verified), None)
+        last_verified_at = latest_verified.finished_at if latest_verified else None
+        stale = enabled and is_stale(last_verified_at, max_age_hours=max_age_hours, now=now)
+        if latest is None:
+            return cls(enabled=enabled, stale=stale)
+        return cls(
+            enabled=enabled,
+            stale=stale,
+            last_backup_at=latest.finished_at or latest.started_at,
+            last_outcome=str(latest.state),
+            last_duration_seconds=latest.duration_seconds,
+            last_size_bytes=latest.total_bytes,
+            last_verified=latest.is_verified,
+            last_verified_at=last_verified_at,
+            object_count=latest.object_count,
+            schema_revision=latest.schema_revision,
+        )
+
+
 class OperationsSummary(BaseModel):
     """Dependency and job state. Reports counts, never cached values."""
 
@@ -442,6 +544,7 @@ class OperationsSummary(BaseModel):
     jobs: list[JobSummary]
     cache: dict[str, Any]
     totals_reconcile: bool
+    backup: BackupSummary
 
 
 class PurgeResponse(BaseModel):
