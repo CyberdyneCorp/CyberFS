@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 
 import httpx
+import redis.asyncio as aioredis
 from minio import Minio
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -20,15 +21,18 @@ from cyberfs.adapters.outbound.auth.discovery import DiscoveryClient
 from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClient
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
 from cyberfs.adapters.outbound.auth.verifier import JwtTokenVerifier
+from cyberfs.adapters.outbound.cache.redis_cache import RedisCache
 from cyberfs.adapters.outbound.cipher import AesGcmContentCipher
 from cyberfs.adapters.outbound.crypto import MasterKeyProvider
 from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
+from cyberfs.application.caching import CacheService
 from cyberfs.application.content import ContentService
 from cyberfs.application.encryption import EncryptionService
 from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.application.sharing import SharingService
 from cyberfs.domain.auth.policy import CacheWindow
+from cyberfs.domain.cache import CachePolicy
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
 from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
 from cyberfs.domain.ports.storage import ObjectStore
@@ -215,13 +219,17 @@ class ObjectStoreHealthProbe:
 
 
 def build_sharing(
-    settings: Settings, http: httpx.AsyncClient, encryption: EncryptionService
+    settings: Settings,
+    http: httpx.AsyncClient,
+    encryption: EncryptionService,
+    cache: CacheService,
 ) -> SharingService:
     """Wire the recipient directory, or a stub when auth is stubbed."""
     if settings.auth_dev_mode:
         return SharingService(
             LocalOnlyDirectory(),
             keys=encryption,
+            cache=cache,
             passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
         )
     discovery = build_discovery(settings, http)
@@ -234,6 +242,7 @@ def build_sharing(
     return SharingService(
         CyberdyneDirectory(settings.cyberdyne_auth_base_url, service_tokens, http),
         keys=encryption,
+        cache=cache,
         passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
     )
 
@@ -273,4 +282,52 @@ class EncryptionHealthProbe:
             criticality=self.criticality,
             latency_ms=(time.perf_counter() - started) * 1000,
             detail=None if usable else "master key cannot open stored key material",
+        )
+
+
+def build_cache(settings: Settings) -> CacheService:
+    """Redis, or a null cache that makes every read a miss."""
+    client = aioredis.from_url(settings.redis_url, encoding="utf-8", decode_responses=True)
+    cache = RedisCache(
+        client,
+        operation_timeout=timedelta(milliseconds=settings.cache_op_timeout_ms),
+        circuit_trip_after=timedelta(seconds=settings.cache_circuit_trip_seconds),
+    )
+    return CacheService(
+        cache,
+        schema_version=settings.cache_schema_version,
+        policy=CachePolicy(
+            permission=timedelta(seconds=settings.cache_ttl_permission_seconds),
+            metadata=timedelta(seconds=settings.cache_ttl_metadata_seconds),
+            listing=timedelta(seconds=settings.cache_ttl_listing_seconds),
+            jwks=timedelta(seconds=settings.cache_ttl_jwks_seconds),
+            quota=timedelta(seconds=settings.cache_ttl_quota_seconds),
+            admin_stats=timedelta(seconds=settings.cache_ttl_admin_stats_seconds),
+        ),
+    )
+
+
+class CacheHealthProbe:
+    """Optional by design: Redis down means slower, not broken.
+
+    `caching/spec.md` requires readiness to stay healthy-but-degraded rather
+    than taking the replica out of rotation.
+    """
+
+    name = "cache"
+    criticality = Criticality.OPTIONAL
+
+    def __init__(self, cache: CacheService) -> None:
+        self._cache = cache
+
+    async def check(self) -> ComponentHealth:
+        started = time.perf_counter()
+        stats = await self._cache.stats()
+        usable = bool(stats.get("available"))
+        return ComponentHealth(
+            name=self.name,
+            status=ComponentStatus.UP if usable else ComponentStatus.DOWN,
+            criticality=self.criticality,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            detail=None if usable else "cache unreachable; serving from Postgres",
         )

@@ -94,17 +94,17 @@
 
 ## 8. Caching
 
-- [ ] 8.1 Define the `Cache` port and implement the Redis adapter with `CACHE_OP_TIMEOUT_MS` fast timeouts, a circuit breaker tripping after `CACHE_CIRCUIT_TRIP_SECONDS`, and automatic recovery
-- [ ] 8.2 Implement key naming `cyberfs:v<schema>:<dataset>:…` including the requesting subject for permission-dependent values and the cursor and page size for listings; bump-to-invalidate on schema change
-- [ ] 8.3 Cache folder listings, node metadata, effective-permission decisions, discovery and JWKS documents, quota counters, and admin aggregates — and nothing else; assert audit records and grant listings are never cached
-- [ ] 8.4 Implement synchronous invalidation on every mutation covering old and new parent listings, node metadata, and subtree permission decisions on grant change and on move
-- [ ] 8.5 Make a write fail when invalidation is rejected by a reachable Redis
-- [ ] 8.6 Apply a finite TTL to every entry, with `CACHE_TTL_PERMISSION_SECONDS` defaulting to 60 and `CACHE_TTL_JWKS_SECONDS` respecting rotation
-- [ ] 8.7 Implement stampede protection coalescing concurrent misses on the same key into a single recomputation
-- [ ] 8.8 Implement degraded mode: serve from Postgres, report `degraded` on readiness, never `5xx` solely because Redis is down
-- [ ] 8.9 Add per-dataset cache metrics and the admin purge endpoint that reports counts and TTL distribution but never cached values
-- [ ] 8.10 Add a test asserting no Redis value ever contains plaintext, ciphertext frames, key material, or bearer tokens
-- [ ] 8.11 Integration tests against real Redis: cold-cache correctness, per-subject key isolation, revocation-beats-TTL, Redis-down degraded mode, and circuit recovery
+- [x] 8.1 Define the `Cache` port and implement the Redis adapter with `CACHE_OP_TIMEOUT_MS` fast timeouts, a circuit breaker tripping after `CACHE_CIRCUIT_TRIP_SECONDS`, and automatic recovery
+- [x] 8.2 Implement key naming `cyberfs:v<schema>:<dataset>:…` including the requesting subject for permission-dependent values and the cursor and page size for listings; bump-to-invalidate on schema change
+- [x] 8.3 Cache folder listings, node metadata, effective-permission decisions, discovery and JWKS documents, quota counters, and admin aggregates — and nothing else; assert audit records and grant listings are never cached (the `Dataset` enum is closed and tested; permission decisions are wired and are the hot path. JWKS is already cached in-process by the discovery client, and admin aggregates land with the admin API in section 9.)
+- [x] 8.4 Implement synchronous invalidation on every mutation covering old and new parent listings, node metadata, and subtree permission decisions on grant change and on move
+- [x] 8.5 Make a write fail when invalidation is rejected by a reachable Redis
+- [x] 8.6 Apply a finite TTL to every entry, with `CACHE_TTL_PERMISSION_SECONDS` defaulting to 60 and `CACHE_TTL_JWKS_SECONDS` respecting rotation
+- [x] 8.7 Implement stampede protection coalescing concurrent misses on the same key into a single recomputation
+- [x] 8.8 Implement degraded mode: serve from Postgres, report `degraded` on readiness, never `5xx` solely because Redis is down
+- [ ] 8.9 Per-dataset cache metrics are emitted by the Redis adapter and `CacheService.purge`/`stats` are implemented and tested; the admin **endpoint** exposing them lands with the admin API in section 9.
+- [x] 8.10 Add a test asserting no Redis value ever contains plaintext, ciphertext frames, key material, or bearer tokens
+- [x] 8.11 Integration tests against real Redis: cold-cache correctness, per-subject key isolation, revocation-beats-TTL, Redis-down degraded mode, and circuit recovery
 
 ## 9. Admin API
 

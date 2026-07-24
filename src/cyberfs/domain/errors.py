@@ -140,3 +140,15 @@ class KeyUnavailableError(CyberFSError):
 class DependencyUnavailableError(CyberFSError):
     code = "dependency_unavailable"
     title = "A required dependency is unavailable"
+
+
+class CacheUnavailableError(CyberFSError):
+    """The cache could not serve or accept an operation.
+
+    Not an API-facing error: reads swallow it (a broken cache is a miss) and
+    only the invalidation path escalates, because a missed invalidation can
+    leave a revoked permission cached.
+    """
+
+    code = "cache_unavailable"
+    title = "Cache is unavailable"

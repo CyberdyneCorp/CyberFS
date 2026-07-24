@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from cyberfs.application.caching import CacheService
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
     CrossOwnerMoveError,
@@ -54,23 +55,41 @@ class NodeView:
 
 
 class NodeService:
-    def __init__(self, *, max_tree_depth: int, page_size_max: int) -> None:
+    def __init__(
+        self,
+        *,
+        max_tree_depth: int,
+        page_size_max: int,
+        cache: CacheService | None = None,
+    ) -> None:
         self._max_depth = max_tree_depth
         self._page_size_max = page_size_max
+        self._cache = cache
 
     # --- permission ----------------------------------------------------
 
     async def effective_role(
         self, uow: UnitOfWork, subject: str, owner_id: uuid.UUID, node: Node
     ) -> Role | None:
-        """The caller's role on `node`, folding in grants on it and its ancestors."""
-        chain = await uow.nodes.ancestors(node.id, max_depth=ANCESTOR_GUARD_DEPTH)
-        scope = [node.id, *(a.id for a in chain)]
-        granted = await uow.grants.highest_role_over(subject, scope)
-        return resolve_effective_role(
-            is_owner=node.owner_id == owner_id,
-            granted=(granted,) if granted is not None else (),
-        )
+        """The caller's role on `node`, folding in grants on it and its ancestors.
+
+        The ancestor walk is the one genuinely hot query in the system, which
+        is why it is cached -- and why every grant change invalidates the
+        caller's decisions synchronously rather than waiting for a TTL.
+        """
+
+        async def compute() -> Role | None:
+            chain = await uow.nodes.ancestors(node.id, max_depth=ANCESTOR_GUARD_DEPTH)
+            scope = [node.id, *(a.id for a in chain)]
+            granted = await uow.grants.highest_role_over(subject, scope)
+            return resolve_effective_role(
+                is_owner=node.owner_id == owner_id,
+                granted=(granted,) if granted is not None else (),
+            )
+
+        if self._cache is None:
+            return await compute()
+        return await self._cache.permission(subject, node.id, compute)
 
     async def _authorize(
         self, uow: UnitOfWork, user: User, node_id: uuid.UUID, minimum: Role
@@ -152,6 +171,7 @@ class NodeService:
         await self._ensure_name_free(uow, parent.id, node.normalized_name)
         await uow.nodes.add(node)
         await uow.flush()
+        await self._invalidate(node.id, old_parent=parent.id)
         return await self._view(uow, node, Role.OWNER if node.owner_id == user.id else Role.EDITOR)
 
     async def rename(
@@ -178,6 +198,7 @@ class NodeService:
         node.rename(candidate, moment)
         await uow.nodes.update(node)
         await uow.flush()
+        await self._invalidate(node.id, old_parent=node.parent_id)
         return await self._view(uow, node, role)
 
     async def move(
@@ -212,9 +233,15 @@ class NodeService:
         await self._ensure_depth(uow, destination)
 
         await self._ensure_name_free(uow, destination.id, node.normalized_name, excluding=node.id)
+        previous_parent = node.parent_id
         node.move_to(destination.id, moment)
         await uow.nodes.update(node)
         await uow.flush()
+        # A move changes inherited access for everyone with a grant above the
+        # old or new location, so every permission decision is dropped.
+        await self._invalidate(
+            node.id, old_parent=previous_parent, new_parent=destination.id, reparented=True
+        )
         return await self._view(uow, node, role)
 
     async def delete(
@@ -240,6 +267,7 @@ class NodeService:
         # from live to trashed until a purge actually frees them.
         await self._move_bytes(uow, node.owner_id, bytes_trashed, moment, to_trash=True)
         await uow.flush()
+        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
         return count
 
     async def restore(
@@ -275,6 +303,7 @@ class NodeService:
         restored = await self._subtree_bytes(uow, node)
         await self._move_bytes(uow, node.owner_id, restored, moment, to_trash=False)
         await uow.flush()
+        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
         return await self._view(uow, node, Role.OWNER)
 
     async def copy(
@@ -418,6 +447,26 @@ class NodeService:
         else:
             usage.restore_from_trash(size_bytes, now)
         await uow.quotas.update(usage)
+
+    async def _invalidate(
+        self,
+        node_id: uuid.UUID,
+        *,
+        old_parent: uuid.UUID | None = None,
+        new_parent: uuid.UUID | None = None,
+        reparented: bool = False,
+    ) -> None:
+        """Drop everything this mutation can have made stale.
+
+        Synchronous and before the response: correctness must never depend on
+        a TTL expiring.
+        """
+        if self._cache is None:
+            return
+        await self._cache.on_node_mutated(node_id, old_parent=old_parent, new_parent=new_parent)
+        if reparented:
+            # Inherited access moved with the subtree.
+            await self._cache.invalidate_all_permissions()
 
     # --- guards --------------------------------------------------------
 

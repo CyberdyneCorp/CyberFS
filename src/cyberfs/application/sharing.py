@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from cyberfs.application.caching import CacheService
 from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
@@ -85,10 +86,12 @@ class SharingService:
         directory: UserDirectory,
         *,
         keys: KeyRewrapper | None = None,
+        cache: CacheService | None = None,
         passphrase_attempts_per_min: int = 10,
     ) -> None:
         self._directory = directory
         self._keys = keys
+        self._cache = cache
         self._attempts = FixedWindowLimiter(
             limit=passphrase_attempts_per_min, window=PASSPHRASE_WINDOW
         )
@@ -143,6 +146,7 @@ class SharingService:
             recipient=subject,
             role=role,
         )
+        await self._invalidate(subject)
         await uow.flush()
         return grant
 
@@ -183,6 +187,9 @@ class SharingService:
             target=node.id,
             recipient=subject,
         )
+        # Before the response, never on a TTL: `caching/spec.md` requires the
+        # recipient's very next request to be denied.
+        await self._invalidate(subject)
         await uow.flush()
 
     async def list_grants(
@@ -394,6 +401,9 @@ class SharingService:
             recipient=subject,
             bytes_moved=size,
         )
+        # Ownership drives permission, so both parties' decisions are stale.
+        await self._invalidate(subject)
+        await self._invalidate(user.subject)
         await uow.flush()
         return node
 
@@ -449,6 +459,15 @@ class SharingService:
         await self._keys.revoke_for(uow, node, subject)
         for descendant in await uow.nodes.descendants(node.id, max_depth=ANCESTOR_GUARD_DEPTH):
             await self._keys.revoke_for(uow, descendant, subject)
+
+    async def _invalidate(self, subject: str) -> None:
+        """Drop every cached permission decision for one subject.
+
+        Cheaper and safer than enumerating an arbitrarily large subtree, and
+        the blast radius is one caller's decisions.
+        """
+        if self._cache is not None:
+            await self._cache.invalidate_permissions_for_subject(subject)
 
     # --- helpers -------------------------------------------------------
 

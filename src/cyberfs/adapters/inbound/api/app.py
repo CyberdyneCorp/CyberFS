@@ -17,10 +17,12 @@ from cyberfs import __version__
 from cyberfs.adapters.inbound.api import health, metrics
 from cyberfs.adapters.inbound.api.composition import (
     AuthHealthProbe,
+    CacheHealthProbe,
     DatabaseHealthProbe,
     EncryptionHealthProbe,
     ObjectStoreHealthProbe,
     build_authentication,
+    build_cache,
     build_content,
     build_encryption,
     build_http_client,
@@ -107,14 +109,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.keys = build_key_provider(settings)
     app.state.encryption = build_encryption(settings, app.state.keys)
     app.state.provisioning = build_provisioning(settings, app.state.keys)
+    app.state.cache = build_cache(settings)
+    app.state.health.register(CacheHealthProbe(app.state.cache))
     app.state.nodes = NodeService(
         max_tree_depth=settings.max_tree_depth,
         page_size_max=settings.page_size_max,
+        cache=app.state.cache,
     )
     app.state.objects = build_object_store(settings)
     app.state.content = build_content(settings, app.state.objects, app.state.encryption)
     app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
-    app.state.sharing = build_sharing(settings, app.state.http, app.state.encryption)
+    app.state.sharing = build_sharing(
+        settings, app.state.http, app.state.encryption, app.state.cache
+    )
     app.state.health.register(EncryptionHealthProbe(app.state.encryption, app.state.unit_of_work))
     app.state.health.register(AuthHealthProbe(discovery))
 
