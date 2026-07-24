@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     # request is refused with `RequestTimeTooSkewed`. Bounds replay of a
     # captured signature to this window.
     s3_clock_skew_seconds: NonNegativeInt = 300
+    # The S3 HTTP surface is mounted only when enabled; a deployment that does
+    # not offer S3 exposes no such routes at all.
+    s3_api_enabled: bool = False
+    # The path the S3 surface is rooted at. Standard clients point their
+    # endpoint URL here; buckets and keys hang off it.
+    s3_base_path: str = "/s3"
 
     # --- backup --------------------------------------------------------
     backup_enabled: bool = False

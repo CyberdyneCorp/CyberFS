@@ -42,6 +42,7 @@ from cyberfs.adapters.inbound.api.routers import admin as admin_router
 from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import me as me_router
 from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
+from cyberfs.adapters.inbound.api.routers import s3 as s3_router
 from cyberfs.adapters.inbound.api.routers import s3_keys as s3_keys_router
 from cyberfs.adapters.inbound.api.routers import shares as shares_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
@@ -52,6 +53,7 @@ from cyberfs.application.jobs import ActivityPruneJob
 from cyberfs.application.nodes import NodeService
 from cyberfs.application.s3_auth import S3SignatureVerifier
 from cyberfs.application.s3_keys import S3AccessKeyService
+from cyberfs.application.s3_objects import S3ObjectService
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
@@ -189,6 +191,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.s3_authentication = build_s3_authenticator(
         app.state.s3_authenticator, app.state.authentication
     )
+    # The S3 object surface orchestrates reads and writes over the existing
+    # content and node services. Built unconditionally; only the HTTP routes
+    # below are gated on `S3_API_ENABLED`.
+    app.state.s3_objects = S3ObjectService(
+        app.state.nodes, app.state.content, page_size_max=settings.page_size_max
+    )
     _wire_backup(app, settings)
     app.state.sharing = build_sharing(
         settings, app.state.http, app.state.encryption, app.state.cache
@@ -219,6 +227,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(me_router.router)
     app.include_router(s3_keys_router.router)
     app.include_router(admin_router.router)
+    # The S3-compatible surface is mounted only when enabled -- a deployment
+    # without it exposes no such routes at all.
+    if settings.s3_api_enabled:
+        app.include_router(s3_router.create_s3_router(settings.s3_base_path))
     if settings.metrics_enabled:
         app.include_router(metrics.router)
 

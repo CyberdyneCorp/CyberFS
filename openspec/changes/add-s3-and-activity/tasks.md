@@ -62,25 +62,25 @@
 
 ## 6. S3 read path
 
-- [ ] 6.1 Add the `S3_API_ENABLED`, `S3_BASE_PATH`, `S3_REGION`, and `S3_CLOCK_SKEW_SECONDS` settings, documented in `.env.example`
-- [ ] 6.2 Implement S3 XML request and response serialization, including the `<Error>` document shape with code, message, and request id
-- [ ] 6.3 Implement `ListBuckets`, returning exactly the caller's own bucket
-- [ ] 6.4 Implement `HeadBucket` and `HeadObject`
-- [ ] 6.5 Implement `ListObjectsV2` with prefix, delimiter, `CommonPrefixes`, `max-keys`, and continuation tokens, over the caller's authorized view only
-- [ ] 6.6 Exclude trashed nodes from every listing, and report plaintext sizes for encrypted files
-- [ ] 6.7 Implement `GetObject`, including `Range` support and decryption of encrypted content
-- [ ] 6.8 Return `NotImplemented` for unsupported operations, and ignore S3 object-version parameters
-- [ ] 6.9 Integration test: `boto3` against a running CyberFS lists and downloads a file byte-identically to REST
+- [x] 6.1 Add the `S3_API_ENABLED`, `S3_BASE_PATH`, `S3_REGION`, and `S3_CLOCK_SKEW_SECONDS` settings, documented in `.env.example` (`S3_REGION`/`S3_CLOCK_SKEW_SECONDS` landed in phase 4; phase 6 adds `S3_API_ENABLED`/`S3_BASE_PATH` and mounts the router only when enabled)
+- [x] 6.2 Implement S3 XML request and response serialization, including the `<Error>` document shape with code, message, and request id
+- [x] 6.3 Implement `ListBuckets`, returning exactly the caller's own bucket
+- [x] 6.4 Implement `HeadBucket` and `HeadObject`
+- [x] 6.5 Implement `ListObjectsV2` with prefix, delimiter, `CommonPrefixes`, `max-keys`, and continuation tokens, over the caller's authorized view only
+- [x] 6.6 Exclude trashed nodes from every listing, and report plaintext sizes for encrypted files
+- [x] 6.7 Implement `GetObject`, including `Range` support and decryption of encrypted content
+- [x] 6.8 Return `NotImplemented` for unsupported operations, and ignore S3 object-version parameters
+- [x] 6.9 Integration test: `boto3` against a running CyberFS lists and downloads a file byte-identically to REST
 
 ## 7. S3 write path
 
-- [ ] 7.1 Implement `PutObject` over the existing upload use case, so quota, versioning, and encryption inheritance apply unchanged
-- [ ] 7.2 Return `QuotaExceeded` when an upload would exceed the owner's quota, storing neither object nor metadata
-- [ ] 7.3 Implement `DeleteObject` and `DeleteObjects` as soft deletes, recoverable for the trash window
-- [ ] 7.4 Implement `CopyObject` server-side, carrying no grants onto the copy
-- [ ] 7.5 Refuse writes under `shared/` where the caller holds only `viewer`
-- [ ] 7.6 Integration test: an upload through S3 is readable through REST and vice versa, including an encrypted file
-- [ ] 7.7 Integration test: a revoked recipient is refused on the very next S3 request
+- [x] 7.1 Implement `PutObject` over the existing upload use case, so quota, versioning, and encryption inheritance apply unchanged
+- [x] 7.2 Return `QuotaExceeded` when an upload would exceed the owner's quota, storing neither object nor metadata
+- [x] 7.3 Implement `DeleteObject` and `DeleteObjects` as soft deletes, recoverable for the trash window
+- [x] 7.4 Implement `CopyObject` server-side, carrying no grants onto the copy
+- [x] 7.5 Refuse writes under `shared/` where the caller holds only `viewer`
+- [x] 7.6 Integration test: an upload through S3 is readable through REST and vice versa, including an encrypted file
+- [x] 7.7 Integration test: a revoked recipient is refused on the very next S3 request
 
 ## 8. Multipart upload
 

@@ -116,6 +116,22 @@ class BucketManagementRefusedError(S3RequestError):
     s3_code = "AccessDenied"
 
 
+class S3NotImplementedError(S3RequestError):
+    """An S3 operation CyberFS does not implement.
+
+    Reported as `NotImplemented`/501 rather than a CyberFS error shape, so an
+    unmodified client learns the operation is unsupported instead of receiving a
+    permission error (`s3-compatibility/spec.md`, "An unsupported operation is
+    reported as such"). It sits in the S3 family only to carry `s3_code`/
+    `s3_status`; the denial semantics of the base are not what apply here.
+    """
+
+    code = "s3_not_implemented"
+    title = "Operation is not implemented"
+    s3_code = "NotImplemented"
+    s3_status = 501
+
+
 # --- lookup ----------------------------------------------------------------
 
 
@@ -141,6 +157,20 @@ class NoSuchBucketError(NotFoundError):
     code = "no_such_bucket"
     title = "The specified bucket does not exist"
     s3_code = "NoSuchBucket"
+    s3_status = 404
+
+
+class NoSuchKeyError(NotFoundError):
+    """An object key that names no reachable node in the caller's view.
+
+    A node the caller may not see is `NoSuchKey`, identically to one that never
+    existed, so existence is not disclosed (`file-storage/spec.md`, "Download
+    denied without permission").
+    """
+
+    code = "no_such_key"
+    title = "The specified key does not exist"
+    s3_code = "NoSuchKey"
     s3_status = 404
 
 
@@ -200,6 +230,21 @@ class AmbiguousS3CredentialsError(ValidationError):
     s3_status = 400
 
 
+class InvalidArgumentError(ValidationError):
+    """A malformed S3 list parameter -- a garbage continuation token, say.
+
+    A request-shape error (400) rendered in S3's dialect as `InvalidArgument`.
+    A continuation token is only an opaque resume cursor over the caller's own
+    authorized view, so a tampered one cannot widen access; it is simply
+    rejected rather than trusted.
+    """
+
+    code = "s3_invalid_argument"
+    title = "An argument is not valid"
+    s3_code = "InvalidArgument"
+    s3_status = 400
+
+
 class PreconditionFailedError(CyberFSError):
     code = "precondition_failed"
     title = "Precondition failed"
@@ -216,6 +261,11 @@ class PayloadTooLargeError(CyberFSError):
 class QuotaExceededError(CyberFSError):
     code = "quota_exceeded"
     title = "Storage quota exceeded"
+    # The S3 surface renders a quota rejection as `QuotaExceeded`/403 and stores
+    # neither object nor metadata (`s3-compatibility/spec.md`, "An upload beyond
+    # quota is refused").
+    s3_code = "QuotaExceeded"
+    s3_status = 403
 
 
 class IntegrityFailureError(CyberFSError):

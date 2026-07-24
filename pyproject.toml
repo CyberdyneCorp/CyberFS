@@ -35,6 +35,9 @@ dev = [
     "pre-commit>=4.0",
     "respx>=0.22",
     "freezegun>=1.5",
+    # Exercises the S3 surface with an unmodified client in the integration
+    # suite; those tests skip gracefully when it is absent.
+    "boto3>=1.35",
 ]
 
 [build-system]
