@@ -17,11 +17,15 @@ import pytest
 from cyberfs.adapters.inbound.api.s3.errors import s3_error_response
 from cyberfs.adapters.inbound.api.s3.xml import (
     S3_NAMESPACE,
+    complete_multipart_upload_result,
     copy_object_result,
     delete_result,
     error_document,
+    initiate_multipart_upload_result,
     list_all_my_buckets,
     list_bucket_result,
+    list_parts_result,
+    parse_complete_multipart_upload,
     parse_delete_request,
 )
 from cyberfs.application.s3_objects import BucketInfo, DeleteOutcome
@@ -34,6 +38,7 @@ from cyberfs.domain.errors import (
     S3NotImplementedError,
 )
 from cyberfs.domain.s3.listing import ListRequest, ListResult, S3ObjectEntry
+from cyberfs.domain.s3.multipart import MultipartPart
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
 
@@ -210,3 +215,84 @@ def test_parse_delete_request_defaults_quiet_false() -> None:
 def test_parse_delete_request_rejects_malformed_xml() -> None:
     with pytest.raises(InvalidArgumentError):
         parse_delete_request(b"not xml at all <<<")
+
+
+# --- multipart serializers -------------------------------------------------
+
+
+def test_initiate_result_carries_the_upload_id() -> None:
+    body = initiate_multipart_upload_result("alice", "big/data.bin", "up-123").decode()
+    assert "<InitiateMultipartUploadResult" in body
+    assert "<Bucket>alice</Bucket>" in body
+    assert "<Key>big/data.bin</Key>" in body
+    assert "<UploadId>up-123</UploadId>" in body
+
+
+def test_complete_result_location_is_the_cyberfs_endpoint() -> None:
+    body = complete_multipart_upload_result(
+        "https://files.example.test/s3/alice/big/data.bin", "alice", "big/data.bin", '"etag-1"'
+    ).decode()
+    assert "<CompleteMultipartUploadResult" in body
+    assert "<Location>https://files.example.test/s3/alice/big/data.bin</Location>" in body
+    assert '<ETag>"etag-1"</ETag>' in body
+    # Never the object store, and no signature over it.
+    assert "minio" not in body.lower()
+    assert "X-Amz" not in body
+
+
+def test_list_parts_result_lists_each_part() -> None:
+    parts = (
+        MultipartPart(
+            upload_id="up-1",
+            part_number=1,
+            etag='"aaa"',
+            size=10,
+            object_key="multipart/up-1/1",
+            uploaded_at=NOW,
+        ),
+        MultipartPart(
+            upload_id="up-1",
+            part_number=2,
+            etag='"bbb"',
+            size=20,
+            object_key="multipart/up-1/2",
+            uploaded_at=NOW,
+        ),
+    )
+    body = list_parts_result("alice", "big.bin", "up-1", parts).decode()
+    assert "<ListPartsResult" in body
+    assert "<PartNumber>1</PartNumber>" in body
+    assert '<ETag>"bbb"</ETag>' in body
+    assert "<Size>20</Size>" in body
+    # The staging object key is never disclosed.
+    assert "multipart/up-1" not in body
+
+
+def test_parse_complete_extracts_part_numbers_and_etags() -> None:
+    body = (
+        b"<CompleteMultipartUpload>"
+        b"<Part><PartNumber>1</PartNumber><ETag>&quot;aaa&quot;</ETag></Part>"
+        b"<Part><PartNumber>2</PartNumber><ETag>&quot;bbb&quot;</ETag></Part>"
+        b"</CompleteMultipartUpload>"
+    )
+    assert parse_complete_multipart_upload(body) == ((1, '"aaa"'), (2, '"bbb"'))
+
+
+def test_parse_complete_rejects_malformed_xml() -> None:
+    with pytest.raises(InvalidArgumentError):
+        parse_complete_multipart_upload(b"not xml <<<")
+
+
+def test_parse_complete_rejects_an_empty_part_list() -> None:
+    with pytest.raises(InvalidArgumentError):
+        parse_complete_multipart_upload(b"<CompleteMultipartUpload></CompleteMultipartUpload>")
+
+
+def test_parse_complete_rejects_a_non_numeric_part_number() -> None:
+    body = (
+        b"<CompleteMultipartUpload>"
+        b"<Part><PartNumber>x</PartNumber><ETag>&quot;aaa&quot;</ETag></Part>"
+        b"</CompleteMultipartUpload>"
+    )
+    with pytest.raises(InvalidArgumentError):
+        parse_complete_multipart_upload(body)

@@ -22,6 +22,7 @@ identical to one that never existed.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -29,15 +30,29 @@ from datetime import datetime
 
 from cyberfs.application.content import ContentService, DownloadPlan
 from cyberfs.application.nodes import ANCESTOR_GUARD_DEPTH, NodeService
+from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
     CyberFSError,
+    InvalidArgumentError,
     NoSuchBucketError,
     NoSuchKeyError,
+    NoSuchUploadError,
     ValidationError,
 )
 from cyberfs.domain.nodes import Node, NodePath, normalize_name
 from cyberfs.domain.ports.repositories import UnitOfWork
+from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.s3.listing import ListRequest, ListResult, S3ObjectEntry, list_objects_v2
+from cyberfs.domain.s3.multipart import (
+    MAX_PART_NUMBER,
+    MIN_PART_NUMBER,
+    MultipartPart,
+    MultipartUpload,
+    order_parts,
+    part_etag,
+    reconcile_requested,
+    staged_part_key,
+)
 from cyberfs.domain.s3.namespace import (
     SHARED_PREFIX,
     S3Target,
@@ -97,13 +112,17 @@ class S3ObjectService:
         self,
         nodes: NodeService,
         content: ContentService,
+        objects: ObjectStore,
         *,
         page_size_max: int,
     ) -> None:
         # `nodes` is used by the write path (phase 7); the read path reaches the
         # tree through the unit of work directly and decrypts through `content`.
+        # `objects` stages multipart parts under a reserved prefix (phase 8);
+        # content and quota still flow through `content`.
         self._nodes = nodes
         self._content = content
+        self._objects = objects
         self._page_size_max = page_size_max
 
     # --- buckets -------------------------------------------------------
@@ -173,6 +192,28 @@ class S3ObjectService:
         refused with `AccessDenied`, since `upload` requires `EDITOR` on the
         parent -- there is no parallel permission check here.
         """
+        return await self._upload_stream(
+            uow, user, target, body, content_type=content_type, declared_length=declared_length
+        )
+
+    async def _upload_stream(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        target: S3Target,
+        body: AsyncIterator[bytes],
+        *,
+        content_type: str | None,
+        declared_length: int | None = None,
+        now: datetime | None = None,
+    ) -> Node:
+        """Store one stream at a target, through the existing upload use case.
+
+        The shared tail of `put_object` and `complete_multipart_upload`: descend
+        (creating folders) to the key's parent, then delegate to
+        `ContentService.upload`, which is the single place quota, versioning, and
+        encryption inheritance are enforced.
+        """
         parent_segments, name = _split_key(target.path)
         start_id = await self._write_root(uow, target)
         parent_id = await self._ensure_parents(uow, user, start_id, parent_segments)
@@ -184,7 +225,133 @@ class S3ObjectService:
             body,
             content_type=content_type,
             declared_length=declared_length,
+            now=now,
         )
+
+    # --- multipart upload ----------------------------------------------
+
+    async def create_multipart_upload(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        target: S3Target,
+        *,
+        content_type: str | None = None,
+        now: datetime | None = None,
+    ) -> str:
+        """Begin a multipart upload, returning its id. Charges no quota yet."""
+        _split_key(target.path)  # a key must name an object, not a folder
+        upload_id = uuid.uuid4().hex
+        await uow.multipart.create(
+            MultipartUpload(
+                upload_id=upload_id,
+                initiator_subject=user.subject,
+                target_owner_subject=target.owner_subject,
+                target_key=target.path,
+                via_shared=target.via_shared,
+                content_type=content_type,
+                created_at=now or utcnow(),
+            )
+        )
+        return upload_id
+
+    async def upload_part(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        upload_id: str,
+        part_number: int,
+        body: AsyncIterator[bytes],
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        """Stage one part, returning its ETag. Stores no node and charges no
+        quota -- only the completion does (task 8.3)."""
+        await self._require_upload(uow, user, upload_id)
+        if not MIN_PART_NUMBER <= part_number <= MAX_PART_NUMBER:
+            raise InvalidArgumentError("part number is out of range", part_number=part_number)
+        key = staged_part_key(upload_id, part_number)
+        digest = hashlib.md5(usedforsecurity=False)
+        size = await self._objects.put(key, _measure_md5(body, digest))
+        etag = part_etag(digest.hexdigest())
+        await uow.multipart.add_part(
+            MultipartPart(
+                upload_id=upload_id,
+                part_number=part_number,
+                etag=etag,
+                size=size,
+                object_key=key,
+                uploaded_at=now or utcnow(),
+            )
+        )
+        return etag
+
+    async def complete_multipart_upload(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        upload_id: str,
+        requested_parts: Sequence[tuple[int, str]],
+        *,
+        now: datetime | None = None,
+    ) -> Node:
+        """Assemble the parts in order into one object, charging quota once.
+
+        The parts are concatenated in part-number order and fed to the same
+        `ContentService.upload` a `PutObject` uses, so the result equals their
+        concatenation and quota/versioning/encryption apply unchanged. A
+        quota-exceeding completion raises before any node is stored and leaves
+        the staged parts for the reaper.
+        """
+        upload = await self._require_upload(uow, user, upload_id)
+        staged = order_parts(await uow.multipart.list_parts(upload_id))
+        chosen = reconcile_requested(requested_parts, staged)
+        total = sum(part.size for part in chosen)
+        node = await self._upload_stream(
+            uow,
+            user,
+            upload.target,
+            self._assembled_stream(chosen),
+            content_type=upload.content_type,
+            declared_length=total,
+            now=now,
+        )
+        await self._discard_upload(uow, upload_id, staged)
+        return node
+
+    async def abort_multipart_upload(self, uow: UnitOfWork, user: User, upload_id: str) -> None:
+        """Discard an upload: reclaim every staged part, create no node."""
+        await self._require_upload(uow, user, upload_id)
+        staged = await uow.multipart.list_parts(upload_id)
+        await self._discard_upload(uow, upload_id, staged)
+
+    async def list_parts(
+        self, uow: UnitOfWork, user: User, upload_id: str
+    ) -> tuple[MultipartPart, ...]:
+        """The staged parts of an upload, in part-number order."""
+        await self._require_upload(uow, user, upload_id)
+        return order_parts(await uow.multipart.list_parts(upload_id))
+
+    async def _assembled_stream(self, parts: Sequence[MultipartPart]) -> AsyncIterator[bytes]:
+        """Concatenate the parts' bytes in the order given -- part-number order."""
+        for part in parts:
+            async for chunk in self._objects.get(part.object_key):
+                yield chunk
+
+    async def _discard_upload(
+        self, uow: UnitOfWork, upload_id: str, parts: Sequence[MultipartPart]
+    ) -> None:
+        """Delete every staged part object and the upload's metadata rows."""
+        for part in parts:
+            await self._objects.delete(part.object_key)
+        await uow.multipart.delete(upload_id)
+
+    async def _require_upload(self, uow: UnitOfWork, user: User, upload_id: str) -> MultipartUpload:
+        """Load an upload the caller owns, or raise `NoSuchUpload`."""
+        upload = await uow.multipart.get(upload_id)
+        if upload is None or upload.initiator_subject != user.subject:
+            raise NoSuchUploadError("no such upload", upload_id=upload_id)
+        return upload
 
     async def copy_object(
         self, uow: UnitOfWork, user: User, source: S3Target, destination: S3Target
@@ -405,6 +572,13 @@ class S3ObjectService:
     def _require_own_bucket(user: User, bucket: str) -> None:
         if subject_for_bucket(bucket) != user.subject:
             raise NoSuchBucketError("no such bucket", bucket=bucket)
+
+
+async def _measure_md5(body: AsyncIterator[bytes], digest: hashlib._Hash) -> AsyncIterator[bytes]:
+    """Pass a part's bytes through while computing its MD5 for the S3 ETag."""
+    async for chunk in body:
+        digest.update(chunk)
+        yield chunk
 
 
 def _entry(key: str, node: Node) -> S3ObjectEntry:

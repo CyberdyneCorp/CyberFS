@@ -54,6 +54,7 @@ from cyberfs.application.nodes import NodeService
 from cyberfs.application.s3_auth import S3SignatureVerifier
 from cyberfs.application.s3_keys import S3AccessKeyService
 from cyberfs.application.s3_objects import S3ObjectService
+from cyberfs.application.s3_presign import S3PresignService
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
@@ -195,7 +196,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # content and node services. Built unconditionally; only the HTTP routes
     # below are gated on `S3_API_ENABLED`.
     app.state.s3_objects = S3ObjectService(
-        app.state.nodes, app.state.content, page_size_max=settings.page_size_max
+        app.state.nodes,
+        app.state.content,
+        app.state.objects,
+        page_size_max=settings.page_size_max,
+    )
+    # Presigned-URL issuance, rooted at CyberFS's own S3 endpoint and bound to a
+    # CyberFS access key -- never the object store. Only built when a public
+    # endpoint is configured, so a URL is never minted without one to root it at.
+    app.state.s3_public_endpoint = settings.s3_public_endpoint
+    app.state.s3_presign = (
+        S3PresignService(
+            app.state.keys,
+            endpoint=settings.s3_public_endpoint,
+            base_path=settings.s3_base_path,
+            region=settings.s3_region,
+        )
+        if settings.s3_public_endpoint
+        else None
     )
     _wire_backup(app, settings)
     app.state.sharing = build_sharing(

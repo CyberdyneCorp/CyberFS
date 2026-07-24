@@ -157,6 +157,16 @@ class Settings(BaseSettings):
     # The path the S3 surface is rooted at. Standard clients point their
     # endpoint URL here; buckets and keys hang off it.
     s3_base_path: str = "/s3"
+    # How long a multipart upload may sit neither completed nor aborted before
+    # the orphan reaper reclaims its staged parts. Bounds the storage a
+    # half-finished upload can occupy.
+    s3_multipart_abandon_hours: PositiveInt = 24
+    # The externally visible CyberFS S3 base URL (scheme + host, e.g.
+    # `https://s3.cyberfs.example`). Presigned URLs and the multipart
+    # `<Location>` are rooted here so they address CyberFS's own endpoint and
+    # never the underlying object store. When unset the multipart `<Location>`
+    # falls back to the request host; issuing a presigned URL requires it.
+    s3_public_endpoint: str | None = None
 
     # --- backup --------------------------------------------------------
     backup_enabled: bool = False

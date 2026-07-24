@@ -23,12 +23,13 @@ from cyberfs.domain.errors import (
     PermissionDeniedError,
     RateLimitedError,
     RequestSkewedError,
+    S3AccessDeniedError,
     S3RequestError,
     SignatureMismatchError,
     UnknownAccessKeyError,
 )
 from cyberfs.domain.ratelimit import FixedWindowLimiter
-from cyberfs.domain.s3 import sigv4
+from cyberfs.domain.s3 import presigned, sigv4
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.request import S3Request
 
@@ -417,3 +418,147 @@ async def test_a_request_without_a_source_ip_is_not_rate_limited() -> None:
         await verifier.verify(
             uow, _signed_request(signed_at=NOW, tamper_signature=True, source_ip=None), now=NOW
         )
+
+
+# --- presigned URLs (phase 9) ----------------------------------------------
+
+HOST = "s3.cyberfs.local"
+BASE_PATH = "/s3"
+BUCKET = OWNER
+OBJECT_KEY = "reports/q3.xlsx"
+
+
+def _presigned_request(
+    *,
+    signed_at: datetime,
+    secret: str = SECRET,
+    access_key_id: str = ACCESS_KEY_ID,
+    expires: int = 900,
+    method: str = "GET",
+    tamper: bool = False,
+    source_ip: str | None = SOURCE_IP,
+) -> S3Request:
+    """A genuinely presigned request built over the domain's own functions."""
+    path = presigned.object_path(BASE_PATH, BUCKET, OBJECT_KEY)
+    query = presigned.build_presigned_query(
+        method=method,
+        path=path,
+        host=HOST,
+        access_key_id=access_key_id,
+        secret=secret,
+        region=REGION,
+        service=SERVICE,
+        amz_date=signed_at.strftime(sigv4.AMZ_DATE_FORMAT),
+        expires=expires,
+    )
+    if tamper:
+        # Flip the last signature nibble so verification must fail.
+        marker = "X-Amz-Signature="
+        head, _, sig = query.rpartition(marker)
+        mutated = sig[:-1] + ("0" if sig[-1] != "0" else "1")
+        query = f"{head}{marker}{mutated}"
+    return S3Request(
+        method=method,
+        path=path,
+        query=query,
+        headers={"host": HOST},
+        source_ip=source_ip,
+    )
+
+
+@pytest.mark.asyncio
+async def test_valid_presigned_request_authenticates() -> None:
+    provider = FakeKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider))
+    verifier = _make_verifier(provider)
+
+    resolved = await verifier.verify(uow, _presigned_request(signed_at=NOW), now=NOW)
+
+    assert resolved.key_id == ACCESS_KEY_ID
+    assert resolved.owner_subject == OWNER
+    # Last-used is stamped on the presigned path exactly as on the header path.
+    assert uow.s3_keys.by_key_id[ACCESS_KEY_ID].last_used_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_a_bad_presigned_signature_is_refused() -> None:
+    provider = FakeKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider))
+    verifier = _make_verifier(provider)
+
+    with pytest.raises(SignatureMismatchError):
+        await verifier.verify(uow, _presigned_request(signed_at=NOW, tamper=True), now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_an_expired_presigned_url_is_access_denied_not_skewed() -> None:
+    provider = FakeKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider))
+    verifier = _make_verifier(provider)
+
+    # Signed 15 minutes ago with a 5-minute lifetime: past expiry.
+    request = _presigned_request(signed_at=NOW - timedelta(minutes=15), expires=300)
+    with pytest.raises(S3AccessDeniedError) as excinfo:
+        await verifier.verify(uow, request, now=NOW)
+    # Expiry is the URL's own lifetime, reported as AccessDenied -- deliberately
+    # NOT RequestTimeTooSkewed, which is a clock-skew failure.
+    assert excinfo.value.s3_code == "AccessDenied"
+    assert not isinstance(excinfo.value, RequestSkewedError)
+
+
+@pytest.mark.asyncio
+async def test_a_presigned_url_within_its_window_is_accepted() -> None:
+    provider = FakeKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider))
+    verifier = _make_verifier(provider)
+
+    # Signed 4 minutes ago with a 5-minute lifetime: still inside the window.
+    request = _presigned_request(signed_at=NOW - timedelta(minutes=4), expires=300)
+    resolved = await verifier.verify(uow, request, now=NOW)
+    assert resolved.key_id == ACCESS_KEY_ID
+
+
+@pytest.mark.asyncio
+async def test_a_revoked_key_stops_a_presigned_url_immediately() -> None:
+    provider = CountingKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider, revoked=True))
+    verifier = _make_verifier(provider)
+
+    with pytest.raises(UnknownAccessKeyError):
+        await verifier.verify(uow, _presigned_request(signed_at=NOW), now=NOW)
+    # The revoked path unseals the placeholder once, so it stays
+    # timing-indistinguishable from an unknown key or a bad signature.
+    assert provider.unseal_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_key_on_a_presigned_url_burns_the_placeholder() -> None:
+    provider = CountingKeyProvider()
+    uow = FakeUnitOfWork()  # no key seeded
+    verifier = _make_verifier(provider)
+
+    with pytest.raises(UnknownAccessKeyError) as excinfo:
+        await verifier.verify(
+            uow, _presigned_request(signed_at=NOW, access_key_id="AKIANOSUCHKEY0000001"), now=NOW
+        )
+    assert excinfo.value.s3_code == "InvalidAccessKeyId"
+    assert provider.unseal_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_query_without_a_presign_signature_is_a_bad_signature() -> None:
+    provider = FakeKeyProvider()
+    uow = FakeUnitOfWork()
+    await _seed_key(uow, _make_key(provider))
+    verifier = _make_verifier(provider)
+
+    # No authorization header and no X-Amz-Signature: falls through to the same
+    # SignatureDoesNotMatch a malformed header yields.
+    request = S3Request(method="GET", path="/s3/user-1/a.txt", query="", headers={"host": HOST})
+    with pytest.raises(SignatureMismatchError):
+        await verifier.verify(uow, request, now=NOW)

@@ -222,6 +222,42 @@ def test_a_revoked_recipient_is_refused_on_the_next_s3_request(base_url: str) ->
     assert status in (403, 404)
 
 
+def test_a_multipart_upload_round_trips_byte_identically(base_url: str) -> None:
+    """Task 8.6: a file large enough to force multipart round-trips identically.
+
+    `aws-cli` is not installed, so boto3 drives the multipart upload directly: a
+    small `multipart_threshold`/`multipart_chunksize` forces at least two parts,
+    and the downloaded bytes must equal what was uploaded.
+    """
+    import io
+
+    from boto3.s3.transfer import TransferConfig
+
+    access_key, secret = _mint_key(base_url)
+    client = _s3_client(base_url, access_key, secret)
+
+    # A payload comfortably above the 5 MiB minimum part size, so a 5 MiB
+    # chunk size splits it into several real parts.
+    payload = b"cyberfs-multipart-" * (1024 * 1024)  # ~18 MiB
+    config = TransferConfig(
+        multipart_threshold=5 * 1024 * 1024,
+        multipart_chunksize=5 * 1024 * 1024,
+        max_concurrency=1,
+    )
+    client.upload_fileobj(io.BytesIO(payload), "alice", "large/blob.bin", Config=config)
+
+    downloaded = client.get_object(Bucket="alice", Key="large/blob.bin")["Body"].read()
+    assert downloaded == payload
+
+    # It is equally readable through REST, proving the assembled object is a
+    # normal versioned file, not a multipart special case.
+    root = _root(base_url, ALICE)
+    large = _find_child(base_url, ALICE, root, "large")
+    node = _find_child(base_url, ALICE, large, "blob.bin")
+    rest_bytes = httpx.get(f"{base_url}/api/v1/nodes/{node}/content", headers=ALICE).content
+    assert rest_bytes == payload
+
+
 def _find_child(base_url: str, who: dict[str, str], parent: str, name: str) -> str:
     page = httpx.get(f"{base_url}/api/v1/nodes/{parent}/children", headers=who).json()
     return next(str(item["id"]) for item in page["items"] if item["name"] == name)

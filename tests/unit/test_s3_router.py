@@ -62,7 +62,7 @@ async def client() -> TestClient:
     app.state.unit_of_work = lambda: uow
     app.state.s3_authentication = StubAuthenticator()
     app.state.provisioning = provisioning
-    app.state.s3_objects = S3ObjectService(nodes, content, page_size_max=1000)
+    app.state.s3_objects = S3ObjectService(nodes, content, store, page_size_max=1000)
     app.include_router(create_s3_router("/s3"))
     return TestClient(app, raise_server_exceptions=False)
 
@@ -171,3 +171,104 @@ def test_get_object_streams_bytes(client: TestClient) -> None:
     response = client.get("/s3/alice/reports/q3.xlsx", headers=ALICE)
     assert response.status_code == 200
     assert response.content == b"numbers"
+
+
+# --- multipart upload ------------------------------------------------------
+
+
+def _upload_id(body: bytes) -> str:
+    element = fromstring(body).find(f"{{{S3_NAMESPACE}}}UploadId")  # noqa: S314 -- trusted server XML
+    assert element is not None and element.text is not None
+    return element.text
+
+
+def test_multipart_round_trips_the_assembled_object(client: TestClient) -> None:
+    created = client.post("/s3/alice/big/data.bin", params={"uploads": ""}, headers=ALICE)
+    assert created.status_code == 200
+    assert "<InitiateMultipartUploadResult" in created.text
+    upload_id = _upload_id(created.content)
+
+    p1, p2 = b"first-part-" * 4, b"second-part-" * 4
+    e1 = client.put(
+        "/s3/alice/big/data.bin",
+        params={"partNumber": "1", "uploadId": upload_id},
+        content=p1,
+        headers=ALICE,
+    )
+    assert e1.status_code == 200 and e1.headers["etag"]
+    e2 = client.put(
+        "/s3/alice/big/data.bin",
+        params={"partNumber": "2", "uploadId": upload_id},
+        content=p2,
+        headers=ALICE,
+    )
+    assert e2.status_code == 200
+
+    body = (
+        f"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber>"
+        f"<ETag>{e1.headers['etag']}</ETag></Part>"
+        f"<Part><PartNumber>2</PartNumber><ETag>{e2.headers['etag']}</ETag></Part>"
+        f"</CompleteMultipartUpload>"
+    )
+    completed = client.post(
+        "/s3/alice/big/data.bin",
+        params={"uploadId": upload_id},
+        content=body.encode(),
+        headers=ALICE,
+    )
+    assert completed.status_code == 200
+    assert "<CompleteMultipartUploadResult" in completed.text
+    # The <Location> is CyberFS's own endpoint, never the object store.
+    assert "minio" not in completed.text.lower()
+
+    got = client.get("/s3/alice/big/data.bin", headers=ALICE)
+    assert got.content == p1 + p2
+
+
+def test_list_parts_reports_the_staged_parts(client: TestClient) -> None:
+    created = client.post("/s3/alice/multi.bin", params={"uploads": ""}, headers=ALICE)
+    upload_id = _upload_id(created.content)
+    client.put(
+        "/s3/alice/multi.bin",
+        params={"partNumber": "1", "uploadId": upload_id},
+        content=b"data",
+        headers=ALICE,
+    )
+
+    listed = client.get("/s3/alice/multi.bin", params={"uploadId": upload_id}, headers=ALICE)
+    assert listed.status_code == 200
+    assert "<ListPartsResult" in listed.text
+    assert "<PartNumber>1</PartNumber>" in listed.text
+
+
+def test_abort_removes_the_upload(client: TestClient) -> None:
+    created = client.post("/s3/alice/gone.bin", params={"uploads": ""}, headers=ALICE)
+    upload_id = _upload_id(created.content)
+    client.put(
+        "/s3/alice/gone.bin",
+        params={"partNumber": "1", "uploadId": upload_id},
+        content=b"data",
+        headers=ALICE,
+    )
+
+    aborted = client.delete("/s3/alice/gone.bin", params={"uploadId": upload_id}, headers=ALICE)
+    assert aborted.status_code == 204
+
+    # The upload is gone: a follow-up list is NoSuchUpload, and no object exists.
+    listed = client.get("/s3/alice/gone.bin", params={"uploadId": upload_id}, headers=ALICE)
+    assert listed.status_code == 404
+    assert _code(listed.content) == "NoSuchUpload"
+    assert client.get("/s3/alice/gone.bin", headers=ALICE).status_code == 404
+
+
+def test_a_bad_part_number_is_invalid_argument(client: TestClient) -> None:
+    created = client.post("/s3/alice/x.bin", params={"uploads": ""}, headers=ALICE)
+    upload_id = _upload_id(created.content)
+    response = client.put(
+        "/s3/alice/x.bin",
+        params={"partNumber": "abc", "uploadId": upload_id},
+        content=b"data",
+        headers=ALICE,
+    )
+    assert response.status_code == 400
+    assert _code(response.content) == "InvalidArgument"

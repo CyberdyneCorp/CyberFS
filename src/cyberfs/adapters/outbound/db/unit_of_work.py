@@ -21,6 +21,7 @@ from cyberfs.adapters.outbound.db.repositories import (
     SqlFileVersionRepository,
     SqlGrantRepository,
     SqlKeyRepository,
+    SqlMultipartUploadRepository,
     SqlNodeRepository,
     SqlPublicLinkRepository,
     SqlQuotaRepository,
@@ -74,6 +75,7 @@ class SqlUnitOfWork:
         self.grants = SqlGrantRepository(session)
         self.keys = SqlKeyRepository(session)
         self.s3_keys = SqlS3AccessKeyRepository(session)
+        self.multipart = SqlMultipartUploadRepository(session)
         self.public_links = SqlPublicLinkRepository(session)
         self.quotas = SqlQuotaRepository(session)
         self.audit = SqlAuditRepository(session)

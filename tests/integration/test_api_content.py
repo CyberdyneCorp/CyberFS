@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Iterator
 from http import HTTPStatus
@@ -145,8 +146,17 @@ def test_ranges_are_advertised(client: TestClient) -> None:
 # --- no presigned URLs -----------------------------------------------------
 
 
+#: The internal object-key shape -- three UUIDs -- naming raw stored bytes. It
+#: must never appear in any response (`file-storage/spec.md`, sharpened rule).
+_OBJECT_KEY_PATTERN = re.compile(r"[0-9a-f-]{36}/[0-9a-f-]{36}/[0-9a-f-]{36}", re.IGNORECASE)
+
+
 def test_no_response_ever_carries_a_presigned_url(client: TestClient) -> None:
-    """`file-storage/spec.md`: direct object access is never delegated."""
+    """`file-storage/spec.md`, sharpened rule (task 9.5): direct MinIO access is
+    never delegated. What is banned is the object-store endpoint host, a
+    MinIO-signed URL, and an internal object key -- NOT a CyberFS-endpoint
+    presigned URL, which is now explicitly permitted because the bytes still
+    transit CyberFS."""
     root = root_id(client, ALICE)
     node = upload(client, ALICE, root, "a.bin", PAYLOAD)
 
@@ -158,8 +168,14 @@ def test_no_response_ever_carries_a_presigned_url(client: TestClient) -> None:
 
     for response in surfaces:
         body = response.text.lower()
-        for marker in ("x-amz-signature", "presign", "amz-credential", ENDPOINT.lower()):
-            assert marker not in body, f"{marker} leaked into {response.url}"
+        # The MinIO endpoint and any URL signed for it are forbidden; a bare
+        # x-amz-signature is not, since a CyberFS-endpoint presigned URL is now
+        # permitted.
+        assert ENDPOINT.lower() not in body, f"MinIO endpoint leaked into {response.url}"
+        assert "minio" not in body, f"MinIO reference leaked into {response.url}"
+        assert not _OBJECT_KEY_PATTERN.search(response.text), (
+            f"internal object key leaked into {response.url}"
+        )
 
 
 def test_download_headers_carry_no_object_key(client: TestClient) -> None:

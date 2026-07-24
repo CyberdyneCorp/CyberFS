@@ -33,6 +33,7 @@ from cyberfs.domain.errors import (
     ContentHashMismatchError,
     RateLimitedError,
     RequestSkewedError,
+    S3AccessDeniedError,
     S3RequestError,
     SignatureMismatchError,
     UnknownAccessKeyError,
@@ -40,9 +41,10 @@ from cyberfs.domain.errors import (
 from cyberfs.domain.ports.crypto import KeyProvider
 from cyberfs.domain.ports.repositories import UnitOfWork
 from cyberfs.domain.ratelimit import FixedWindowLimiter
-from cyberfs.domain.s3 import sigv4
+from cyberfs.domain.s3 import presigned, sigv4
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.authorization import AuthorizationHeader, parse_authorization_header
+from cyberfs.domain.s3.presigned import PresignedQuery, parse_presigned_query
 from cyberfs.domain.s3.request import S3Request
 from cyberfs.infrastructure.logging import get_logger
 
@@ -98,6 +100,11 @@ class S3SignatureVerifier:
     async def _verify(self, uow: UnitOfWork, request: S3Request, now: datetime) -> S3AccessKey:
         auth = parse_authorization_header(request.headers.get("authorization"))
         if auth is None:
+            # No signature in a header: a presigned URL carries it in the query
+            # instead. Parse that form; a request with neither is a bad signature.
+            query = parse_presigned_query(request.query)
+            if query is not None:
+                return await self._verify_presigned(uow, request, query, now)
             raise SignatureMismatchError("authorization header is malformed")
         self._ensure_within_skew(request.amz_date, now)
         self._ensure_content_matches(request)
@@ -119,6 +126,53 @@ class S3SignatureVerifier:
         await uow.s3_keys.update(key.with_last_used(now))
         logger.info("s3_request_authenticated", key_id=key.key_id, subject=key.owner_subject)
         return key
+
+    async def _verify_presigned(
+        self, uow: UnitOfWork, request: S3Request, query: PresignedQuery, now: datetime
+    ) -> S3AccessKey:
+        """Verify a presigned request: expiry first, then key, then signature.
+
+        An expired URL is `AccessDenied` (403), deliberately not
+        `RequestTimeTooSkewed` -- expiry is the URL's own lifetime, not clock
+        skew. An unknown or revoked key runs the same placeholder unseal + sign
+        work as a bad signature before refusal, so the two stay
+        timing-indistinguishable and a revoked key stops working at once.
+        """
+        self._ensure_not_expired(query, now)
+        key = await uow.s3_keys.get_by_key_id(query.access_key_id)
+        if key is None or not key.is_active:
+            dummy_secret = self._unseal(self._dummy_sealed, self._dummy_master_key_id)
+            self._compute_presigned_signature(dummy_secret, query, request)
+            raise UnknownAccessKeyError("access key is not recognised")
+
+        secret = self._unseal(key.sealed_secret, key.secret_master_key_id)
+        computed = self._compute_presigned_signature(secret, query, request)
+        if not sigv4.verify(computed, query.signature):
+            raise SignatureMismatchError("request signature does not match")
+
+        await uow.s3_keys.update(key.with_last_used(now))
+        logger.info("s3_presigned_authenticated", key_id=key.key_id, subject=key.owner_subject)
+        return key
+
+    def _ensure_not_expired(self, query: PresignedQuery, now: datetime) -> None:
+        signed_at = sigv4.parse_amz_date(query.amz_date)
+        if now > signed_at + timedelta(seconds=query.expires):
+            raise S3AccessDeniedError("the presigned URL has expired")
+
+    def _compute_presigned_signature(
+        self, secret: str, query: PresignedQuery, request: S3Request
+    ) -> str:
+        request_string = presigned.presigned_canonical_request(
+            request.method,
+            request.path,
+            request.query,
+            request.headers,
+            query.signed_headers,
+        )
+        scope = sigv4.credential_scope(query.date_stamp, query.region, query.service)
+        to_sign = sigv4.string_to_sign(query.amz_date, scope, request_string)
+        signing_key = sigv4.signing_key(secret, query.date_stamp, query.region, query.service)
+        return sigv4.signature(signing_key, to_sign)
 
     def _unseal(self, sealed: bytes, master_key_id: str) -> str:
         return self._keys.unseal_secret(sealed, master_key_id=master_key_id).decode("utf-8")

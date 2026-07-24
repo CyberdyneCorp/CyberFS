@@ -174,6 +174,20 @@ class NoSuchKeyError(NotFoundError):
     s3_status = 404
 
 
+class NoSuchUploadError(NotFoundError):
+    """A multipart upload id that names no in-flight upload for the caller.
+
+    Returned to `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`,
+    and `ListParts` when the id is unknown, already completed, aborted, or
+    reclaimed as abandoned (`s3-compatibility/spec.md`, "Multipart upload").
+    """
+
+    code = "no_such_upload"
+    title = "The specified multipart upload does not exist"
+    s3_code = "NoSuchUpload"
+    s3_status = 404
+
+
 # --- conflict --------------------------------------------------------------
 
 
@@ -242,6 +256,34 @@ class InvalidArgumentError(ValidationError):
     code = "s3_invalid_argument"
     title = "An argument is not valid"
     s3_code = "InvalidArgument"
+    s3_status = 400
+
+
+class InvalidPartError(ValidationError):
+    """A completion part list that does not match what was staged.
+
+    A part the client names is absent, or its ETag does not match the staged
+    part with that number (`s3-compatibility/spec.md`, "Multipart upload"). A
+    request-shape error (400) rendered as S3's `InvalidPart`.
+    """
+
+    code = "s3_invalid_part"
+    title = "One or more parts could not be found or did not match"
+    s3_code = "InvalidPart"
+    s3_status = 400
+
+
+class InvalidPartOrderError(ValidationError):
+    """A completion part list whose part numbers are not strictly ascending, or
+    a set of staged parts carrying a duplicate part number.
+
+    Rendered as S3's `InvalidPartOrder` (400): the parts must be assembled in
+    part-number order, so an out-of-order or duplicated list cannot be honoured.
+    """
+
+    code = "s3_invalid_part_order"
+    title = "The list of parts was not in ascending part-number order"
+    s3_code = "InvalidPartOrder"
     s3_status = 400
 
 

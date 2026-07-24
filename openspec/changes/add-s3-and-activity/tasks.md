@@ -84,20 +84,20 @@
 
 ## 8. Multipart upload
 
-- [ ] 8.1 Implement `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, and `ListParts`
-- [ ] 8.2 Assemble parts in part-number order so the result equals their concatenation
-- [ ] 8.3 Charge quota on completion, not on each part
-- [ ] 8.4 Leave no visible node when an upload is aborted, and reclaim its parts
-- [ ] 8.5 Reclaim uploads abandoned beyond `S3_MULTIPART_ABANDON_HOURS` via the orphan reaper
-- [ ] 8.6 Integration test: `aws-cli` uploads a file large enough to force multipart, and it round-trips byte-identically
+- [x] 8.1 Implement `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, and `ListParts`
+- [x] 8.2 Assemble parts in part-number order so the result equals their concatenation
+- [x] 8.3 Charge quota on completion, not on each part
+- [x] 8.4 Leave no visible node when an upload is aborted, and reclaim its parts
+- [x] 8.5 Reclaim uploads abandoned beyond `S3_MULTIPART_ABANDON_HOURS` via the orphan reaper
+- [x] 8.6 Integration test: `boto3` (aws-cli is not installed) uploads a file large enough to force multipart, and it round-trips byte-identically
 
 ## 9. Presigned URLs
 
-- [ ] 9.1 Implement presigned URL generation addressing CyberFS's own S3 endpoint
-- [ ] 9.2 Verify a presigned request's signature and expiry, refusing an expired one with `AccessDenied`
-- [ ] 9.3 Make a presigned URL stop working the moment the key that signed it is revoked
-- [ ] 9.4 Add a test asserting no response from any surface contains the MinIO endpoint, an AWS signature for it, or an object key
-- [ ] 9.5 Update `file-storage`'s presigned-URL requirement and its tests to the sharpened rule
+- [x] 9.1 Implement presigned URL generation addressing CyberFS's own S3 endpoint
+- [x] 9.2 Verify a presigned request's signature and expiry, refusing an expired one with `AccessDenied`
+- [x] 9.3 Make a presigned URL stop working the moment the key that signed it is revoked
+- [x] 9.4 Add a test asserting no response from any surface contains the MinIO endpoint, an AWS signature for it, or an object key
+- [x] 9.5 Update `file-storage`'s presigned-URL requirement and its tests to the sharpened rule
 
 ## 10. Observability and close-out
 

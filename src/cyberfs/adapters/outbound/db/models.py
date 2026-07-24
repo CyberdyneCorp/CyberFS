@@ -272,6 +272,67 @@ class S3AccessKeyRow(Base):
     )
 
 
+class MultipartUploadRow(Base):
+    """One in-flight multipart upload.
+
+    The write target is stored decomposed so completion rebuilds the exact
+    address the parts assemble into, without re-parsing a raw key. `created_at`
+    is indexed for the reaper's abandonment sweep.
+    """
+
+    __tablename__ = "multipart_uploads"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: The opaque upload id an S3 client echoes on every part and on completion.
+    upload_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: The subject that created the upload; only they may add to or finish it.
+    initiator_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Whose tree the assembled object lands in -- the caller's, or another
+    #: owner's under the shared prefix.
+    target_owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The node path the object assembles to, matching `NodePath.path`.
+    target_key: Mapped[str] = mapped_column(String(2048), nullable=False)
+    via_shared: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+
+    __table_args__ = (
+        # The hot path is a single lookup by upload id; parts reference it.
+        Index("uq_multipart_uploads_upload_id", "upload_id", unique=True),
+        # The abandonment sweep reads by age.
+        Index("ix_multipart_uploads_created_at", "created_at"),
+    )
+
+
+class MultipartPartRow(Base):
+    """One staged part of a multipart upload.
+
+    The bytes live at `object_key` under the reserved staging prefix; this row
+    records the part number, its S3 ETag, and its size so completion can
+    validate the client's part list and charge the summed size once.
+    """
+
+    __tablename__ = "multipart_parts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    upload_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("multipart_uploads.upload_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    part_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    etag: Mapped[str] = mapped_column(String(64), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
+
+    __table_args__ = (
+        # A part number is unique within an upload; a re-upload replaces it.
+        UniqueConstraint("upload_id", "part_number", name="uq_multipart_parts_upload_number"),
+        Index("ix_multipart_parts_upload", "upload_id"),
+    )
+
+
 class QuotaUsageRow(Base):
     __tablename__ = "quota_usage"
 

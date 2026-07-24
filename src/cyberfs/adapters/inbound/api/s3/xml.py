@@ -23,6 +23,7 @@ from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
 from cyberfs.application.s3_objects import BucketInfo, DeleteOutcome
 from cyberfs.domain.errors import InvalidArgumentError
 from cyberfs.domain.s3.listing import ListRequest, ListResult
+from cyberfs.domain.s3.multipart import MultipartPart
 
 #: The one S3 XML namespace every document declares.
 S3_NAMESPACE = "http://s3.amazonaws.com/doc/2006-03-01/"
@@ -109,6 +110,87 @@ def delete_result(outcomes: Sequence[DeleteOutcome], *, quiet: bool) -> bytes:
             _text(error, "Code", outcome.error_code or "AccessDenied")
             _text(error, "Message", outcome.error_message or "")
     return _render(root)
+
+
+def initiate_multipart_upload_result(bucket: str, key: str, upload_id: str) -> bytes:
+    """An ``InitiateMultipartUploadResult`` -- the id the client echoes on parts."""
+    root = _root("InitiateMultipartUploadResult")
+    _text(root, "Bucket", bucket)
+    _text(root, "Key", key)
+    _text(root, "UploadId", upload_id)
+    return _render(root)
+
+
+def complete_multipart_upload_result(location: str, bucket: str, key: str, etag: str) -> bytes:
+    """A ``CompleteMultipartUploadResult``.
+
+    `location` addresses CyberFS's own endpoint for the assembled object, never
+    the object store (`s3-compatibility/spec.md`, "Presigned URLs resolve to
+    CyberFS"): every value here is a user-facing address or the object's ETag.
+    """
+    root = _root("CompleteMultipartUploadResult")
+    _text(root, "Location", location)
+    _text(root, "Bucket", bucket)
+    _text(root, "Key", key)
+    _text(root, "ETag", etag)
+    return _render(root)
+
+
+def list_parts_result(
+    bucket: str, key: str, upload_id: str, parts: Sequence[MultipartPart]
+) -> bytes:
+    """A ``ListPartsResult`` -- the staged parts, each by number, ETag, and size."""
+    root = _root("ListPartsResult")
+    _text(root, "Bucket", bucket)
+    _text(root, "Key", key)
+    _text(root, "UploadId", upload_id)
+    for part in parts:
+        element = SubElement(root, "Part")
+        _text(element, "PartNumber", str(part.part_number))
+        _text(element, "LastModified", _iso(part.uploaded_at))
+        _text(element, "ETag", part.etag)
+        _text(element, "Size", str(part.size))
+    return _render(root)
+
+
+def parse_complete_multipart_upload(body: bytes) -> tuple[tuple[int, str], ...]:
+    """Parse a ``CompleteMultipartUpload`` request into (part number, ETag) pairs.
+
+    A malformed body -- non-XML, or a part with an unparseable number -- is an
+    `InvalidArgument`, never a server error: the document is client input.
+    """
+    try:
+        root = fromstring(body)  # noqa: S314 -- values are opaque text, no entity use
+    except Exception as exc:  # a non-XML or truncated body
+        raise InvalidArgumentError("the complete request is not valid XML") from exc
+    parts: list[tuple[int, str]] = []
+    for child in root:
+        if _local(child.tag) == "Part":
+            parts.append(_complete_part(child))
+    if not parts:
+        raise InvalidArgumentError("the complete request lists no parts")
+    return tuple(parts)
+
+
+def _complete_part(element: Element) -> tuple[int, str]:
+    number: int | None = None
+    etag: str | None = None
+    for field in element:
+        local = _local(field.tag)
+        if local == "PartNumber":
+            number = _part_number(field.text)
+        elif local == "ETag":
+            etag = field.text or ""
+    if number is None or etag is None:
+        raise InvalidArgumentError("a part is missing its number or ETag")
+    return number, etag
+
+
+def _part_number(raw: str | None) -> int:
+    try:
+        return int((raw or "").strip())
+    except ValueError as exc:
+        raise InvalidArgumentError("a part number is not a number") from exc
 
 
 def parse_delete_request(body: bytes) -> tuple[tuple[str, ...], bool]:

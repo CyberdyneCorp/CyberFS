@@ -20,6 +20,7 @@ from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.s3.access_key import S3AccessKey
+from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.stats import TenantStatistics, UserStorage
 from cyberfs.domain.users import QuotaUsage, User
@@ -173,6 +174,36 @@ class S3AccessKeyRepository(Protocol):
         ...
 
 
+class MultipartUploadRepository(Protocol):
+    """In-flight multipart uploads and their staged parts.
+
+    An upload is looked up by its opaque id; parts are read in bulk for one
+    upload. The abandonment scan is answerable from the ``created_at`` index
+    rather than a full table scan, so the reaper reclaims uploads left neither
+    completed nor aborted.
+    """
+
+    async def create(self, upload: MultipartUpload) -> None: ...
+    async def get(self, upload_id: str) -> MultipartUpload | None: ...
+    async def delete(self, upload_id: str) -> None:
+        """Remove the upload and its part rows. Its staged objects are deleted
+        separately by the caller, which holds the object store."""
+        ...
+
+    async def add_part(self, part: MultipartPart) -> None:
+        """Record a staged part, replacing any earlier part with the same
+        number -- S3 lets a client re-upload a part before completing."""
+        ...
+
+    async def list_parts(self, upload_id: str) -> tuple[MultipartPart, ...]: ...
+
+    async def list_abandoned_before(
+        self, cutoff: datetime, *, limit: int
+    ) -> tuple[MultipartUpload, ...]:
+        """Uploads created before `cutoff` -- the reaper's abandonment sweep."""
+        ...
+
+
 class QuotaRepository(Protocol):
     async def get(self, user_id: uuid.UUID) -> QuotaUsage | None: ...
     async def add(self, usage: QuotaUsage) -> None: ...
@@ -273,6 +304,7 @@ class UnitOfWork(Protocol):
     public_links: PublicLinkRepository
     keys: KeyRepository
     s3_keys: S3AccessKeyRepository
+    multipart: MultipartUploadRepository
     quotas: QuotaRepository
     audit: AuditRepository
     #: Read-only aggregates for the admin surface. Sums and counts only --

@@ -43,6 +43,8 @@ class ReaperResult:
     objects_scanned: int = 0
     objects_deleted: int = 0
     bytes_reclaimed: int = 0
+    #: Multipart uploads abandoned past `S3_MULTIPART_ABANDON_HOURS` and reclaimed.
+    uploads_reclaimed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,8 @@ class OrphanReaper:
     def __init__(self, objects: ObjectStore, settings: Settings) -> None:
         self._objects = objects
         self._grace = timedelta(minutes=settings.orphan_grace_minutes)
+        self._abandon = timedelta(hours=settings.s3_multipart_abandon_hours)
+        self._batch = settings.page_size_max
 
     async def run(self, uow: UnitOfWork, *, now: datetime | None = None) -> ReaperResult:
         moment = now or utcnow()
@@ -151,9 +155,33 @@ class OrphanReaper:
             deleted += 1
             reclaimed += stored.size
 
+        uploads, upload_bytes = await self._reap_abandoned_multipart(uow, moment)
+        reclaimed += upload_bytes
+        await uow.commit()
+
         job_runs_total.labels(job=self.name, outcome="success").inc()
-        logger.info("reaper_completed", scanned=scanned, deleted=deleted, bytes=reclaimed)
-        return ReaperResult(scanned, deleted, reclaimed)
+        logger.info(
+            "reaper_completed", scanned=scanned, deleted=deleted, bytes=reclaimed, uploads=uploads
+        )
+        return ReaperResult(scanned, deleted, reclaimed, uploads)
+
+    async def _reap_abandoned_multipart(self, uow: UnitOfWork, now: datetime) -> tuple[int, int]:
+        """Reclaim uploads left neither completed nor aborted past the window.
+
+        Their staged part objects live outside the live-object key shape, so the
+        scan above never touches them; this metadata-driven sweep deletes each
+        part object and the upload's rows. Returns the count reclaimed and the
+        bytes those parts held.
+        """
+        cutoff = now - self._abandon
+        abandoned = await uow.multipart.list_abandoned_before(cutoff, limit=self._batch)
+        reclaimed_bytes = 0
+        for upload in abandoned:
+            for part in await uow.multipart.list_parts(upload.upload_id):
+                await self._objects.delete(part.object_key)
+                reclaimed_bytes += part.size
+            await uow.multipart.delete(upload.upload_id)
+        return len(abandoned), reclaimed_bytes
 
     @staticmethod
     async def _is_referenced(uow: UnitOfWork, key: str) -> bool:

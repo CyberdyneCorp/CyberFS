@@ -36,6 +36,7 @@ from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
+from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -323,6 +324,58 @@ class SqlS3AccessKeyRepository:
             mappers.apply_s3_access_key(row, key)
 
 
+class SqlMultipartUploadRepository:
+    """In-flight multipart uploads and their staged parts."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, upload: MultipartUpload) -> None:
+        self._session.add(mappers.multipart_upload_to_row(upload))
+
+    async def get(self, upload_id: str) -> MultipartUpload | None:
+        result = await self._session.execute(
+            select(m.MultipartUploadRow).where(m.MultipartUploadRow.upload_id == upload_id)
+        )
+        row = result.scalar_one_or_none()
+        return mappers.multipart_upload_from_row(row) if row else None
+
+    async def delete(self, upload_id: str) -> None:
+        # Part rows cascade on the upload-id foreign key.
+        await self._session.execute(
+            delete(m.MultipartUploadRow).where(m.MultipartUploadRow.upload_id == upload_id)
+        )
+
+    async def add_part(self, part: MultipartPart) -> None:
+        # A re-uploaded part replaces the earlier one at that number.
+        await self._session.execute(
+            delete(m.MultipartPartRow).where(
+                m.MultipartPartRow.upload_id == part.upload_id,
+                m.MultipartPartRow.part_number == part.part_number,
+            )
+        )
+        self._session.add(mappers.multipart_part_to_row(part))
+
+    async def list_parts(self, upload_id: str) -> tuple[MultipartPart, ...]:
+        result = await self._session.execute(
+            select(m.MultipartPartRow)
+            .where(m.MultipartPartRow.upload_id == upload_id)
+            .order_by(m.MultipartPartRow.part_number)
+        )
+        return tuple(mappers.multipart_part_from_row(r) for r in result.scalars())
+
+    async def list_abandoned_before(
+        self, cutoff: datetime, *, limit: int
+    ) -> tuple[MultipartUpload, ...]:
+        result = await self._session.execute(
+            select(m.MultipartUploadRow)
+            .where(m.MultipartUploadRow.created_at < cutoff)
+            .order_by(m.MultipartUploadRow.created_at)
+            .limit(limit)
+        )
+        return tuple(mappers.multipart_upload_from_row(r) for r in result.scalars())
+
+
 class SqlQuotaRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -483,6 +536,7 @@ __all__ = [
     "SqlFileVersionRepository",
     "SqlGrantRepository",
     "SqlKeyRepository",
+    "SqlMultipartUploadRepository",
     "SqlNodeRepository",
     "SqlPublicLinkRepository",
     "SqlQuotaRepository",

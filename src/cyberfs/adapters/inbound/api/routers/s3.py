@@ -29,10 +29,14 @@ from cyberfs.adapters.inbound.api.dependencies import UnitOfWorkDep
 from cyberfs.adapters.inbound.api.routers.content import stream_response
 from cyberfs.adapters.inbound.api.s3.errors import S3_XML_MEDIA_TYPE, s3_error_response
 from cyberfs.adapters.inbound.api.s3.xml import (
+    complete_multipart_upload_result,
     copy_object_result,
     delete_result,
+    initiate_multipart_upload_result,
     list_all_my_buckets,
     list_bucket_result,
+    list_parts_result,
+    parse_complete_multipart_upload,
     parse_delete_request,
 )
 from cyberfs.application.provisioning import ProvisioningService
@@ -52,8 +56,6 @@ _UNSUPPORTED_SUBRESOURCES = frozenset(
     {
         "acl",
         "tagging",
-        "uploads",
-        "uploadid",
         "versioning",
         "versions",
         "policy",
@@ -83,7 +85,13 @@ _UNSUPPORTED_SUBRESOURCES = frozenset(
 
 
 def create_s3_router(base_path: str) -> APIRouter:
-    """Build the S3 router rooted at `base_path` (e.g. ``/s3``)."""
+    """Build the S3 router rooted at `base_path` (e.g. ``/s3``).
+
+    The multipart `<Location>` is rooted at ``app.state.s3_public_endpoint`` when
+    a public endpoint is configured, so it names CyberFS's own endpoint; absent
+    one it falls back to the request host. Either way it is CyberFS, never the
+    object store.
+    """
     router = APIRouter(prefix=base_path, tags=["s3"])
 
     @router.get("/")
@@ -144,9 +152,17 @@ async def _delete_objects(request: Request, uow: UnitOfWork, user: User, bucket:
     return Response(content=delete_result(outcomes, quiet=quiet), media_type=S3_XML_MEDIA_TYPE)
 
 
+#: Query keys that mark a multipart operation. Handled before
+#: `_ensure_supported`, which would otherwise never see the sub-resources it now
+#: implements -- the same precedent as `?delete` on a bucket.
+_MULTIPART_MARKERS = ("uploads", "uploadId", "partNumber")
+
+
 async def _dispatch_object(
     request: Request, uow: UnitOfWork, user: User, bucket: str, key: str
 ) -> Response:
+    if any(marker in request.query_params for marker in _MULTIPART_MARKERS):
+        return await _dispatch_multipart(request, uow, user, bucket, key)
     _ensure_supported(request)
     # A foreign bucket is `NoSuchBucket` and a malformed shared address is
     # `InvalidArgument`; both are raised here and rendered as S3 XML.
@@ -203,6 +219,89 @@ async def _copy_object(
         content=copy_object_result(node.etag, node.updated_at),
         media_type=S3_XML_MEDIA_TYPE,
     )
+
+
+# --- multipart upload ------------------------------------------------------
+
+
+async def _dispatch_multipart(
+    request: Request, uow: UnitOfWork, user: User, bucket: str, key: str
+) -> Response:
+    """Route one of the five multipart operations by method and query params."""
+    params = request.query_params
+    upload_id = params.get("uploadId")
+    if request.method == "POST" and "uploads" in params:
+        return await _create_multipart(request, uow, user, bucket, key)
+    if request.method == "PUT" and "partNumber" in params and upload_id is not None:
+        return await _upload_part(request, uow, user, upload_id)
+    if request.method == "POST" and upload_id is not None:
+        return await _complete_multipart(request, uow, user, upload_id, bucket, key)
+    if request.method == "DELETE" and upload_id is not None:
+        await _service(request).abort_multipart_upload(uow, user, upload_id)
+        await uow.commit()
+        return Response(status_code=HTTPStatus.NO_CONTENT)
+    if request.method == "GET" and upload_id is not None:
+        parts = await _service(request).list_parts(uow, user, upload_id)
+        return Response(
+            content=list_parts_result(bucket, key, upload_id, parts),
+            media_type=S3_XML_MEDIA_TYPE,
+        )
+    raise S3NotImplementedError("that multipart operation is not implemented")
+
+
+async def _create_multipart(
+    request: Request, uow: UnitOfWork, user: User, bucket: str, key: str
+) -> Response:
+    target = resolve_key(user.subject, bucket, key)
+    upload_id = await _service(request).create_multipart_upload(
+        uow, user, target, content_type=request.headers.get("content-type")
+    )
+    await uow.commit()
+    return Response(
+        content=initiate_multipart_upload_result(bucket, key, upload_id),
+        media_type=S3_XML_MEDIA_TYPE,
+    )
+
+
+async def _upload_part(request: Request, uow: UnitOfWork, user: User, upload_id: str) -> Response:
+    part_number = _parse_part_number(request)
+    etag = await _service(request).upload_part(uow, user, upload_id, part_number, request.stream())
+    await uow.commit()
+    return Response(status_code=HTTPStatus.OK, headers={"ETag": etag})
+
+
+async def _complete_multipart(
+    request: Request, uow: UnitOfWork, user: User, upload_id: str, bucket: str, key: str
+) -> Response:
+    requested = parse_complete_multipart_upload(await request.body())
+    node = await _service(request).complete_multipart_upload(uow, user, upload_id, requested)
+    await uow.commit()
+    location = _object_location(request, bucket, key)
+    return Response(
+        content=complete_multipart_upload_result(location, bucket, key, node.etag),
+        media_type=S3_XML_MEDIA_TYPE,
+    )
+
+
+def _object_location(request: Request, bucket: str, key: str) -> str:
+    """The `<Location>` for a completed object: CyberFS's own endpoint, never
+    the object store. Rooted at the configured public endpoint when set, else
+    derived from the request host (still CyberFS). The path -- ``{base}/{bucket}
+    /{key}`` -- is the request's own, so only scheme+host is substituted."""
+    endpoint: str | None = getattr(request.app.state, "s3_public_endpoint", None)
+    if endpoint:
+        return f"{endpoint.rstrip('/')}{request.url.path}"
+    return str(request.url).split("?", 1)[0]
+
+
+def _parse_part_number(request: Request) -> int:
+    raw = request.query_params.get("partNumber")
+    if raw is None:
+        raise InvalidArgumentError("partNumber is required")
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise InvalidArgumentError("partNumber is not a number") from exc
 
 
 def _content_length(request: Request) -> int | None:

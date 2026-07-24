@@ -255,6 +255,81 @@ async def test_the_reaper_reports_what_it_scanned() -> None:
     assert result.bytes_reclaimed == 3
 
 
+# --- abandoned multipart uploads -------------------------------------------
+
+
+def _stage_upload(
+    uow: FakeUnitOfWork, store: FakeObjectStore, created_at: datetime, *, upload_id: str = "up-1"
+) -> None:
+    """Record an in-flight upload with two staged part objects."""
+    from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload, staged_part_key
+
+    uow.multipart.uploads[upload_id] = MultipartUpload(
+        upload_id=upload_id,
+        initiator_subject="alice",
+        target_owner_subject="alice",
+        target_key="/big.bin",
+        via_shared=False,
+        content_type=None,
+        created_at=created_at,
+    )
+    parts = []
+    for number in (1, 2):
+        key = staged_part_key(upload_id, number)
+        store.objects[key] = b"part-bytes"
+        parts.append(
+            MultipartPart(
+                upload_id=upload_id,
+                part_number=number,
+                etag=f'"{number}"',
+                size=len(b"part-bytes"),
+                object_key=key,
+                uploaded_at=created_at,
+            )
+        )
+    uow.multipart.parts[upload_id] = parts
+
+
+async def test_the_reaper_reclaims_an_abandoned_upload() -> None:
+    uow = FakeUnitOfWork()
+    store = FakeObjectStore()
+    _stage_upload(uow, store, NOW - timedelta(hours=25))
+
+    result = await OrphanReaper(store, settings(s3_multipart_abandon_hours=24)).run(uow, now=NOW)
+
+    assert result.uploads_reclaimed == 1
+    assert uow.multipart.uploads == {}
+    assert store.objects == {}  # both staged part objects are gone
+    assert result.bytes_reclaimed == 2 * len(b"part-bytes")
+
+
+async def test_the_reaper_leaves_an_in_window_upload_untouched() -> None:
+    uow = FakeUnitOfWork()
+    store = FakeObjectStore()
+    _stage_upload(uow, store, NOW - timedelta(hours=1))
+
+    result = await OrphanReaper(store, settings(s3_multipart_abandon_hours=24)).run(uow, now=NOW)
+
+    assert result.uploads_reclaimed == 0
+    assert "up-1" in uow.multipart.uploads
+    assert len(store.objects) == 2  # the staged parts are still there
+
+
+async def test_staged_parts_are_never_swept_as_orphans() -> None:
+    """A staged part lives outside the live-object key shape, so the object scan
+    never touches it -- only the abandonment sweep may, once the window passes."""
+    uow = FakeUnitOfWork()
+    store = FakeObjectStore()
+    _stage_upload(uow, store, NOW - timedelta(hours=1))
+    for key in list(store.objects):
+        store.timestamps[key] = NOW - timedelta(days=30)  # old, but still not an orphan key
+
+    result = await OrphanReaper(store, settings(s3_multipart_abandon_hours=24)).run(uow, now=NOW)
+
+    assert result.objects_deleted == 0
+    assert len(store.objects) == 2
+
+
 # --- reconciliation --------------------------------------------------------
 
 

@@ -26,6 +26,7 @@ from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
 from cyberfs.domain.s3.access_key import S3AccessKey
+from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -206,6 +207,37 @@ class FakeS3AccessKeyRepository:
 
     async def update(self, key: S3AccessKey) -> None:
         self.by_key_id[key.key_id] = key
+
+
+class FakeMultipartUploadRepository:
+    def __init__(self) -> None:
+        self.uploads: dict[str, MultipartUpload] = {}
+        self.parts: dict[str, list[MultipartPart]] = {}
+
+    async def create(self, upload: MultipartUpload) -> None:
+        self.uploads[upload.upload_id] = upload
+        self.parts.setdefault(upload.upload_id, [])
+
+    async def get(self, upload_id: str) -> MultipartUpload | None:
+        return self.uploads.get(upload_id)
+
+    async def delete(self, upload_id: str) -> None:
+        self.uploads.pop(upload_id, None)
+        self.parts.pop(upload_id, None)
+
+    async def add_part(self, part: MultipartPart) -> None:
+        parts = self.parts.setdefault(part.upload_id, [])
+        parts[:] = [p for p in parts if p.part_number != part.part_number]
+        parts.append(part)
+
+    async def list_parts(self, upload_id: str) -> tuple[MultipartPart, ...]:
+        return tuple(sorted(self.parts.get(upload_id, []), key=lambda p: p.part_number))
+
+    async def list_abandoned_before(
+        self, cutoff: datetime, *, limit: int
+    ) -> tuple[MultipartUpload, ...]:
+        found = [u for u in self.uploads.values() if u.created_at < cutoff]
+        return tuple(sorted(found, key=lambda u: u.created_at)[:limit])
 
 
 class FakeFileVersionRepository:
@@ -451,6 +483,7 @@ class FakeUnitOfWork:
         self.public_links = FakePublicLinkRepository()
         self.keys = FakeKeyRepository()
         self.s3_keys = FakeS3AccessKeyRepository()
+        self.multipart = FakeMultipartUploadRepository()
         self.quotas = FakeQuotaRepository(self.nodes)
         self.audit = FakeAuditRepository()
         self.activity = FakeActivityQueries(self.audit, self.nodes, self.users)

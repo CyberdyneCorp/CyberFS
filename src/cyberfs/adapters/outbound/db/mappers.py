@@ -15,6 +15,7 @@ from cyberfs.domain.backup import BackupRecord, BackupState
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
 from cyberfs.domain.s3.access_key import S3AccessKey
+from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -277,6 +278,55 @@ def s3_access_key_from_row(row: m.S3AccessKeyRow) -> S3AccessKey:
         created_at=row.created_at,
         last_used_at=row.last_used_at,
         revoked_at=row.revoked_at,
+    )
+
+
+# --- multipart uploads -----------------------------------------------------
+
+
+def multipart_upload_to_row(upload: MultipartUpload) -> m.MultipartUploadRow:
+    return m.MultipartUploadRow(
+        upload_id=upload.upload_id,
+        initiator_subject=upload.initiator_subject,
+        target_owner_subject=upload.target_owner_subject,
+        target_key=upload.target_key,
+        via_shared=upload.via_shared,
+        content_type=upload.content_type,
+        created_at=upload.created_at,
+    )
+
+
+def multipart_upload_from_row(row: m.MultipartUploadRow) -> MultipartUpload:
+    return MultipartUpload(
+        upload_id=row.upload_id,
+        initiator_subject=row.initiator_subject,
+        target_owner_subject=row.target_owner_subject,
+        target_key=row.target_key,
+        via_shared=row.via_shared,
+        content_type=row.content_type,
+        created_at=row.created_at,
+    )
+
+
+def multipart_part_to_row(part: MultipartPart) -> m.MultipartPartRow:
+    return m.MultipartPartRow(
+        upload_id=part.upload_id,
+        part_number=part.part_number,
+        etag=part.etag,
+        size=part.size,
+        object_key=part.object_key,
+        uploaded_at=part.uploaded_at,
+    )
+
+
+def multipart_part_from_row(row: m.MultipartPartRow) -> MultipartPart:
+    return MultipartPart(
+        upload_id=row.upload_id,
+        part_number=row.part_number,
+        etag=row.etag,
+        size=row.size,
+        object_key=row.object_key,
+        uploaded_at=row.uploaded_at,
     )
 
 

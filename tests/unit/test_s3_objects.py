@@ -27,6 +27,7 @@ from cyberfs.domain.auth.principal import Principal
 from cyberfs.domain.errors import (
     NoSuchBucketError,
     NoSuchKeyError,
+    NoSuchUploadError,
     PermissionDeniedError,
     QuotaExceededError,
     ValidationError,
@@ -59,6 +60,7 @@ def build_service(store: FakeObjectStore) -> S3ObjectService:
     return S3ObjectService(
         NodeService(max_tree_depth=64, page_size_max=1000),
         build_content(store),
+        store,
         page_size_max=1000,
     )
 
@@ -108,7 +110,7 @@ async def world() -> World:
     store = FakeObjectStore()
     nodes = NodeService(max_tree_depth=64, page_size_max=1000)
     content = build_content(store)
-    service = S3ObjectService(nodes, content, page_size_max=1000)
+    service = S3ObjectService(nodes, content, store, page_size_max=1000)
     w = World(uow, alice, store, service, content, nodes)
     reports = await w.folder(alice.root_folder_id, "reports")
     await w.file(reports, "q3.xlsx", b"third quarter numbers")
@@ -533,7 +535,7 @@ async def test_put_object_into_an_encrypted_folder_stores_ciphertext() -> None:
         encryption=enc,
     )
     nodes = NodeService(max_tree_depth=64, page_size_max=1000)
-    service = S3ObjectService(nodes, content, page_size_max=1000)
+    service = S3ObjectService(nodes, content, store, page_size_max=1000)
 
     vault = await nodes.create_folder(
         uow, alice, alice.root_folder_id, "vault", encryption_default=EncryptionDefault.ON, now=NOW
@@ -658,3 +660,250 @@ async def test_an_editor_can_write_under_the_shared_prefix(world: World) -> None
         resolve_key("alice", "alice", f"shared/{bob.subject}/projects/from-alice.txt"),
     )
     assert await collect(plan.stream) == b"editor write"
+
+
+# --- multipart upload ------------------------------------------------------
+
+
+class CountingContent(ContentService):
+    """A `ContentService` that counts its `upload` calls, so a test can prove a
+    completion charges the content path exactly once, never per part."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.upload_calls = 0
+
+    async def upload(self, *args: object, **kwargs: object) -> Node:  # type: ignore[override]
+        self.upload_calls += 1
+        return await super().upload(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def _staged_keys(store: FakeObjectStore) -> list[str]:
+    return [key for key in store.objects if key.startswith("multipart/")]
+
+
+def _assembled_keys(store: FakeObjectStore) -> list[str]:
+    return [key for key in store.objects if not key.startswith("multipart/")]
+
+
+async def _stage(
+    service: S3ObjectService,
+    uow: FakeUnitOfWork,
+    user: User,
+    upload_id: str,
+    parts: list[tuple[int, bytes]],
+) -> list[tuple[int, str]]:
+    requested: list[tuple[int, str]] = []
+    for number, data in parts:
+        etag = await service.upload_part(uow, user, upload_id, number, stream(data), now=NOW)
+        requested.append((number, etag))
+    return requested
+
+
+async def _fresh(
+    subject: str = "alice",
+) -> tuple[FakeUnitOfWork, User, FakeObjectStore, S3ObjectService]:
+    uow = FakeUnitOfWork()
+    user = await provision(uow, subject)
+    store = FakeObjectStore()
+    return uow, user, store, build_service(store)
+
+
+async def test_multipart_completes_to_the_concatenation_in_part_order() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big/data.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+
+    p1, p2, p3 = b"A" * 20, b"B" * 25, b"C" * 30
+    # Stage the middle part last, to prove assembly is by number, not arrival.
+    requested = await _stage(service, uow, alice, upload_id, [(1, p1), (3, p3), (2, p2)])
+    requested.sort()
+
+    node = await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+    assert node.size_bytes == len(p1) + len(p2) + len(p3)
+
+    plan = await service.get_object(uow, alice, resolve_key("alice", "alice", "big/data.bin"))
+    assert await collect(plan.stream) == p1 + p2 + p3
+
+
+async def test_completion_charges_the_content_path_exactly_once() -> None:
+    uow = FakeUnitOfWork()
+    alice = await provision(uow, "alice")
+    store = FakeObjectStore()
+    content = CountingContent(
+        store, max_upload_bytes=10 * GB, upload_chunk_bytes=8, version_retention_count=10
+    )
+    service = S3ObjectService(
+        NodeService(max_tree_depth=64, page_size_max=1000), content, store, page_size_max=1000
+    )
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    requested = await _stage(service, uow, alice, upload_id, [(1, b"x" * 8), (2, b"y" * 8)])
+
+    # Staging parts never touches the content upload path.
+    assert content.upload_calls == 0
+    await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+    assert content.upload_calls == 1
+
+
+async def test_staging_a_part_charges_no_quota() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+
+    before = await uow.quotas.get(alice.id)
+    assert before is not None
+    baseline = before.live_bytes
+    await _stage(service, uow, alice, upload_id, [(1, b"x" * 40), (2, b"y" * 40)])
+
+    mid = await uow.quotas.get(alice.id)
+    assert mid is not None
+    assert mid.live_bytes == baseline  # nothing charged while parts are staged
+
+
+async def test_quota_is_charged_once_on_completion() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    requested = await _stage(service, uow, alice, upload_id, [(1, b"x" * 40), (2, b"y" * 40)])
+
+    before = await uow.quotas.get(alice.id)
+    assert before is not None
+    baseline = before.live_bytes
+    await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+    after = await uow.quotas.get(alice.id)
+    assert after is not None
+    assert after.live_bytes == baseline + 80
+
+
+async def test_completion_discards_the_staged_parts() -> None:
+    uow, alice, store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    requested = await _stage(service, uow, alice, upload_id, [(1, b"x" * 8), (2, b"y" * 8)])
+    assert len(_staged_keys(store)) == 2
+
+    await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+    assert _staged_keys(store) == []
+    assert await uow.multipart.get(upload_id) is None
+
+
+async def test_abort_leaves_no_node_and_reclaims_parts() -> None:
+    uow, alice, store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    await _stage(service, uow, alice, upload_id, [(1, b"x" * 8), (2, b"y" * 8)])
+    assert len(_staged_keys(store)) == 2
+
+    await service.abort_multipart_upload(uow, alice, upload_id)
+
+    assert _staged_keys(store) == []
+    assert await uow.multipart.get(upload_id) is None
+    # No object ever became visible under the intended key.
+    with pytest.raises(NoSuchKeyError):
+        await service.get_object(uow, alice, resolve_key("alice", "alice", "big.bin"))
+
+
+async def test_a_quota_exceeding_completion_stores_no_object_and_leaves_parts() -> None:
+    uow, alice, store, service = await _fresh()
+    alice.quota_bytes = 10  # far below the assembled size
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    requested = await _stage(service, uow, alice, upload_id, [(1, b"x" * 40), (2, b"y" * 40)])
+
+    with pytest.raises(QuotaExceededError):
+        await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+
+    # No assembled object crossed into the store; only the staged parts remain,
+    # left for the reaper (the router's transaction rollback drops the metadata).
+    assert _assembled_keys(store) == []
+    assert len(_staged_keys(store)) == 2
+    assert await uow.multipart.get(upload_id) is not None
+
+
+async def test_list_parts_returns_them_in_order() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    await _stage(service, uow, alice, upload_id, [(2, b"y" * 8), (1, b"x" * 8)])
+
+    parts = await service.list_parts(uow, alice, upload_id)
+    assert [p.part_number for p in parts] == [1, 2]
+
+
+async def test_re_uploading_a_part_replaces_it() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    await service.upload_part(uow, alice, upload_id, 1, stream(b"first"), now=NOW)
+    etag2 = await service.upload_part(uow, alice, upload_id, 1, stream(b"second-longer"), now=NOW)
+
+    parts = await service.list_parts(uow, alice, upload_id)
+    assert len(parts) == 1
+    assert parts[0].etag == etag2
+    assert parts[0].size == len(b"second-longer")
+
+
+async def test_an_out_of_range_part_number_is_refused() -> None:
+    uow, alice, _store, service = await _fresh()
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    with pytest.raises(ValidationError):
+        await service.upload_part(uow, alice, upload_id, 0, stream(b"x"), now=NOW)
+
+
+async def test_an_unknown_upload_id_is_no_such_upload() -> None:
+    uow, alice, _store, service = await _fresh()
+    with pytest.raises(NoSuchUploadError):
+        await service.list_parts(uow, alice, "does-not-exist")
+
+
+async def test_another_subject_cannot_touch_an_upload() -> None:
+    uow, alice, _store, service = await _fresh()
+    bob = await provision(uow, "bob")
+    target = resolve_key("alice", "alice", "big.bin")
+    upload_id = await service.create_multipart_upload(uow, alice, target, now=NOW)
+    with pytest.raises(NoSuchUploadError):
+        await service.abort_multipart_upload(uow, bob, upload_id)
+
+
+async def test_multipart_into_an_encrypted_folder_seals_the_assembly() -> None:
+    uow = FakeUnitOfWork()
+    alice = await ProvisioningService(
+        MasterKeyProvider(b"\x01" * KEY_BYTES), default_quota_bytes=10 * GB
+    ).resolve(uow, Principal(subject="alice"), now=NOW)
+    store = FakeObjectStore()
+    enc = EncryptionService(
+        MasterKeyProvider(b"\x01" * KEY_BYTES),
+        AesGcmContentCipher(1024),
+        encryption_default_on=False,
+    )
+    content = ContentService(
+        store,
+        max_upload_bytes=10 * GB,
+        upload_chunk_bytes=64,
+        version_retention_count=10,
+        encryption=enc,
+    )
+    nodes = NodeService(max_tree_depth=64, page_size_max=1000)
+    service = S3ObjectService(nodes, content, store, page_size_max=1000)
+    await nodes.create_folder(
+        uow, alice, alice.root_folder_id, "vault", encryption_default=EncryptionDefault.ON, now=NOW
+    )
+
+    upload_id = await service.create_multipart_upload(
+        uow, alice, resolve_key("alice", "alice", "vault/big.bin"), now=NOW
+    )
+    p1, p2 = b"secret part one!" * 4, b"secret part two!" * 4
+    requested = await _stage(service, uow, alice, upload_id, [(1, p1), (2, p2)])
+    node = await service.complete_multipart_upload(uow, alice, upload_id, requested, now=NOW)
+
+    assert node.encrypted is True
+    # The assembled object is ciphertext; neither plaintext part appears in it.
+    assert all(p1 not in blob and p2 not in blob for blob in _assembled_keys_blobs(store))
+    plan = await service.get_object(uow, alice, resolve_key("alice", "alice", "vault/big.bin"))
+    assert await collect(plan.stream) == p1 + p2
+
+
+def _assembled_keys_blobs(store: FakeObjectStore) -> list[bytes]:
+    return [blob for key, blob in store.objects.items() if not key.startswith("multipart/")]
