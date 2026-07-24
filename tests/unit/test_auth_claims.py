@@ -103,17 +103,26 @@ def test_non_string_entitlements_are_dropped() -> None:
 
 
 def test_client_credentials_token_is_a_service_principal() -> None:
-    principal = principal_from_claims({"client_id": "reporting-svc", "exp": 1893456000})
+    """The real CyberdyneAuth shape: type `service`, subject `client:<id>`."""
+    principal = principal_from_claims(
+        {
+            "sub": "client:reporting-svc",
+            "client_id": "reporting-svc",
+            "type": "service",
+            "scope": "openid profile",
+            "exp": 1893456000,
+        }
+    )
     assert principal.is_service
     assert not principal.is_user
     assert principal.subject == "reporting-svc"
 
 
-def test_service_token_with_sub_equal_to_client_id_is_a_service_principal() -> None:
-    principal = principal_from_claims(
-        {"sub": "reporting-svc", "client_id": "reporting-svc", "exp": 1893456000}
-    )
+def test_token_with_a_client_id_and_no_subject_is_a_service_principal() -> None:
+    """Defensive: a token with no subject at all cannot belong to a user."""
+    principal = principal_from_claims({"client_id": "reporting-svc", "exp": 1893456000})
     assert principal.is_service
+    assert principal.subject == "reporting-svc"
 
 
 def test_user_token_is_not_a_service_principal() -> None:
@@ -137,3 +146,132 @@ def test_identity_is_stable_across_an_email_change() -> None:
     before = principal_from_claims(claims(email="old@example.test"))
     after = principal_from_claims(claims(email="new@example.test"))
     assert before.subject == after.subject
+
+
+# --- token type (regression: CyberdyneAuth signs every token kind alike) ----
+
+
+def test_access_token_is_accepted() -> None:
+    assert principal_from_claims(claims(type="access")).subject == "user-1"
+
+
+def test_refresh_token_is_not_a_bearer_credential() -> None:
+    """A refresh token carries the same issuer and signature as an access token."""
+    with pytest.raises(InvalidTokenError, match="not an access token"):
+        principal_from_claims(claims(type="refresh", sid="session-1"))
+
+
+def test_mfa_challenge_token_is_rejected() -> None:
+    """Issued after the password step but BEFORE the second factor is verified.
+
+    Accepting one would let a caller who has only completed half of two-factor
+    authentication act as the fully authenticated user.
+    """
+    with pytest.raises(InvalidTokenError, match="not an access token"):
+        principal_from_claims(claims(type="mfa"))
+
+
+@pytest.mark.parametrize("bad", ["id", "unknown", "", 42, None])
+def test_unrecognised_token_type_is_rejected(bad: Any) -> None:
+    if bad is None:
+        pytest.skip("absent type is covered separately")
+    with pytest.raises(InvalidTokenError):
+        principal_from_claims(claims(type=bad))
+
+
+def test_token_without_a_type_claim_is_tolerated() -> None:
+    """A legacy or non-CyberdyneAuth token is still fully validated otherwise."""
+    assert principal_from_claims(claims()).subject == "user-1"
+
+
+# --- service subjects (regression: sub is `client:<id>`, not `<id>`) --------
+
+
+def test_service_token_subject_drops_the_client_prefix() -> None:
+    principal = principal_from_claims(
+        {
+            "sub": "client:cyberfs",
+            "client_id": "cyberfs",
+            "type": "service",
+            "exp": 1893456000,
+        }
+    )
+    assert principal.is_service
+    assert principal.subject == "cyberfs"
+
+
+def test_service_token_is_detected_from_the_type_claim() -> None:
+    principal = principal_from_claims(
+        {"sub": "client:reporting", "type": "service", "exp": 1893456000}
+    )
+    assert principal.is_service
+    assert principal.subject == "reporting"
+
+
+def test_service_principal_cannot_be_an_admin() -> None:
+    """A service has no user identity, so an is_admin claim on one means nothing."""
+    principal = principal_from_claims(
+        {
+            "sub": "client:cyberfs",
+            "client_id": "cyberfs",
+            "type": "service",
+            "is_admin": True,
+            "exp": 1893456000,
+        }
+    )
+    assert principal.is_service
+    assert not principal.is_admin
+
+
+def test_user_token_with_admin_is_still_admin() -> None:
+    assert principal_from_claims(claims(type="access", is_admin=True)).is_admin
+
+
+# --- introspection payloads (RFC 7662 uses `token_type`, not `type`) --------
+
+
+def test_introspected_user_token_is_a_user_principal() -> None:
+    """Verified against a live instance: introspection says token_type=user."""
+    principal = principal_from_claims(
+        {
+            "active": True,
+            "sub": "user-1",
+            "token_type": "user",
+            "is_admin": True,
+            "exp": 1893456000,
+        }
+    )
+    assert not principal.is_service
+    assert principal.is_admin
+    assert principal.subject == "user-1"
+
+
+def test_introspected_service_token_is_a_service_principal() -> None:
+    """The exact payload a live CyberdyneAuth returned for the cyberfs client."""
+    principal = principal_from_claims(
+        {
+            "active": True,
+            "sub": "client:cyb_YpkLeby8cpqxGKtp",
+            "scope": "directory:read openid",
+            "client_id": "cyb_YpkLeby8cpqxGKtp",
+            "token_type": "service",
+            "exp": 1893456000,
+        }
+    )
+    assert principal.is_service
+    assert principal.subject == "cyb_YpkLeby8cpqxGKtp"
+    assert not principal.is_admin
+
+
+@pytest.mark.parametrize("bad", ["refresh", "mfa", "unknown"])
+def test_unexpected_introspection_token_type_is_rejected(bad: str) -> None:
+    with pytest.raises(InvalidTokenError, match="not an access token"):
+        principal_from_claims({"active": True, "sub": "u", "token_type": bad, "exp": 1})
+
+
+def test_jwt_type_wins_over_introspection_token_type() -> None:
+    """A JWT `type` is authoritative when both spellings somehow appear."""
+    with pytest.raises(InvalidTokenError):
+        principal_from_claims(
+            {"sub": "u", "type": "refresh", "token_type": "user", "exp": 1893456000}
+        )

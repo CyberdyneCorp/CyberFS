@@ -18,6 +18,42 @@ as arguments precisely so there is nowhere to bake a constant in, and
 `tests/unit/test_auth_policy.py` asserts that the old hard-coded value is
 rejected.
 
+## CyberdyneAuth must run RS256 + OIDC (hard prerequisite)
+
+**Both of these default to off.** With the defaults, CyberFS cannot authenticate
+anyone at all:
+
+| Setting on CyberdyneAuth | Default | Required for CyberFS |
+|---|---|---|
+| `JWT_ALGORITHM` | `HS256` | **`RS256`** |
+| `OIDC_ENABLED` | `false` | **`true`** |
+| `OIDC_ISSUER` | empty | the instance's public URL |
+| `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` | empty | RSA keypair |
+
+Why each matters:
+
+- **`JWT_ALGORITHM=HS256` publishes no JWKS.** HS256 is symmetric — there is no
+  public half to publish, and CyberdyneAuth sets no `kid` header. A resource
+  server cannot verify a symmetric token without holding the signing secret,
+  which would make it a token *issuer*, not a verifier. Verification would be
+  impossible and CyberFS would be reduced to introspecting every single request.
+- **`OIDC_ENABLED=false` 404s the discovery document** (and the JWKS endpoint).
+  Since CyberFS derives issuer, JWKS URI, and algorithms from discovery, a 404
+  means no verification is possible at all. Readiness reports the auth
+  dependency as failed and every authenticated request returns `503`.
+- **`OIDC_ISSUER` must be the public URL**, because the `iss` CyberdyneAuth
+  *signs into tokens* is `oidc_issuer or jwt_issuer`. If it is unset, tokens are
+  signed with the bare fallback name while discovery advertises something else,
+  and issuer validation fails for every token — the #47/#114 failure mode
+  reproduced from the other side.
+
+Verify a target instance before pointing CyberFS at it:
+
+```bash
+curl -s "$BASE/.well-known/openid-configuration" | jq '.issuer, .jwks_uri, .id_token_signing_alg_values_supported'
+curl -s "$BASE/.well-known/jwks.json" | jq '.keys | length'   # must be >= 1
+```
+
 ## Provisioning the CyberFS client (required before deployment)
 
 CyberFS needs an OAuth2 **client-credentials** client at CyberdyneAuth. It uses
@@ -89,7 +125,8 @@ rotation occurring just after one would stay invisible until the cooldown lapsed
 
 | Claim | Use |
 |---|---|
-| `sub` | the identity. Ownership, grants, and quota all key off it, so it must stay stable across email and login-method changes. |
+| `type` | **which kind of token this is.** CyberdyneAuth signs `access`, `refresh`, `mfa`, and `service` tokens with the same key and the same issuer, so a signature check alone does not tell them apart. CyberFS accepts only `access` and `service`. Accepting an `mfa` token would be an authentication bypass: it is issued after the password step but *before* the second factor is verified. |
+| `sub` | the identity. Ownership, grants, and quota all key off it, so it must stay stable across email and login-method changes. For a service token the subject is `client:<client_id>`; CyberFS normalises it back to the bare client id. |
 | `is_admin` | gates `/api/v1/admin/**`. Never grants access to file content. |
 | `org`, `orgs` | recorded on the local user record. A **missing** `orgs` claim means *no* org access, never all orgs — absence is a legacy token, not a wildcard. |
 | `entitlements` | recorded; not yet used for quota sizing (an open question in `design.md`). |

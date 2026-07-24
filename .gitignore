@@ -25,3 +25,8 @@ admin/test-results/
 *.swp
 .idea/
 .vscode/
+
+# Provisioned OAuth client secrets — never commit
+*.secret
+.cyberfs-client.secret
+.local-keys/

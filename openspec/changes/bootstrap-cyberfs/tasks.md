@@ -12,7 +12,7 @@
 
 ## 2. Authentication (CyberdyneAuth resource server)
 
-- [ ] 2.1 **BLOCKED (external)** Provision the CyberFS OAuth2 client at CyberdyneAuth. Needs an operator with CyberdyneAuth admin access; run its `provision-oauth-client` skill. The documentation half is done in `docs/auth-integration.md`. Until this lands, token verification works (public JWKS) but every introspection-backed operation fails closed with `503`.
+- [x] 2.1 Provision the CyberFS OAuth2 client at CyberdyneAuth. Done against a local instance: client `cyb_YpkLeby8cpqxGKtp` with the `client_credentials` grant and `openid,directory:read` scopes; secret written to a mode-600 file, never printed or committed. Verified by minting a service token and introspecting it. `docs/auth-integration.md` records the contract, including the hard prerequisite that CyberdyneAuth run `JWT_ALGORITHM=RS256` + `OIDC_ENABLED=true` (both default to off). **Staging/production still need the same provisioning by an operator with admin access.**
 - [x] 2.2 Define the `IdentityProvider` port in `domain/ports` and the `Principal` value object (subject, is_admin, org, orgs, is_service)
 - [x] 2.3 Implement the OIDC discovery client: fetch and cache the discovery document with `OIDC_DISCOVERY_TTL_SECONDS`; never hard-code issuer, JWKS URI, or algorithm
 - [x] 2.4 Implement JWKS fetching and caching with `kid`-miss refresh bounded by `JWKS_REFRESH_COOLDOWN_SECONDS`, and stale-but-usable behaviour up to `JWKS_STALE_MAX_SECONDS`

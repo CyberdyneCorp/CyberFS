@@ -43,7 +43,8 @@ REAL_MASTER_KEY = base64.b64encode(b"\x01" * 32).decode()
 
 
 def build(**overrides: object) -> Settings:
-    return Settings(**{**REQUIRED, **overrides})  # type: ignore[arg-type]
+    # `_env_file=None`: never read the developer's local .env in a test.
+    return Settings(**{**REQUIRED, "_env_file": None, **overrides})  # type: ignore[arg-type]
 
 
 # --- .env.example stays in sync -------------------------------------------
@@ -77,7 +78,7 @@ def test_env_example_has_no_unknown_keys() -> None:
 def test_missing_required_setting_fails_startup(missing: str) -> None:
     values = {k: v for k, v in REQUIRED.items() if k != missing}
     with pytest.raises((ValidationError, MasterKeyError)) as exc:
-        Settings(**values)  # type: ignore[arg-type]
+        Settings(**values, _env_file=None)  # type: ignore[arg-type]
     assert missing in str(exc.value).lower()
 
 

@@ -15,6 +15,19 @@ from cyberfs.infrastructure.settings import Environment, Settings
 TEST_MASTER_KEY = base64.b64encode(b"\x07" * 32).decode()
 
 
+@pytest.fixture(autouse=True)
+def isolate_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep settings tests hermetic.
+
+    `Settings` reads a real `.env` and the real environment. A developer with a
+    local `.env` -- which the README tells them to create -- would otherwise see
+    "missing required setting" tests pass spuriously, because the value was
+    supplied from disk rather than from the test. Strip both.
+    """
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+
+
 def make_settings(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "environment": Environment.TEST,
@@ -28,6 +41,8 @@ def make_settings(**overrides: object) -> Settings:
         "cyberfs_client_id": "cyberfs",
         "cyberfs_client_secret": "unit-test-client-value",
         "master_key": TEST_MASTER_KEY,
+        # Never read the developer's .env during a test.
+        "_env_file": None,
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
