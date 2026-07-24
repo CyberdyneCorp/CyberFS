@@ -13,7 +13,7 @@ from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.principal import Org
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
-from cyberfs.domain.sharing import Grant, Role
+from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -111,6 +111,8 @@ def node_to_row(node: Node) -> m.NodeRow:
 
 
 def apply_node(row: m.NodeRow, node: Node) -> None:
+    # Ownership is mutable: transferring a subtree rewrites it.
+    row.owner_id = node.owner_id
     row.parent_id = node.parent_id
     row.name = node.name
     row.normalized_name = node.normalized_name
@@ -322,4 +324,43 @@ def grant_from_row(row: m.GrantRow) -> Grant:
         granted_by=row.granted_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+# --- public links ----------------------------------------------------------
+
+
+def link_to_row(link: PublicLink) -> m.PublicLinkRow:
+    return m.PublicLinkRow(
+        id=link.id,
+        node_id=link.node_id,
+        token_hash=link.token_hash,
+        passphrase_hash=link.passphrase_hash,
+        created_by=link.created_by,
+        created_at=link.created_at,
+        expires_at=link.expires_at,
+        revoked_at=link.revoked_at,
+        access_count=link.access_count,
+        last_accessed_at=link.last_accessed_at,
+    )
+
+
+def apply_link(row: m.PublicLinkRow, link: PublicLink) -> None:
+    row.revoked_at = link.revoked_at
+    row.access_count = link.access_count
+    row.last_accessed_at = link.last_accessed_at
+
+
+def link_from_row(row: m.PublicLinkRow) -> PublicLink:
+    return PublicLink(
+        id=row.id,
+        node_id=row.node_id,
+        token_hash=row.token_hash,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        expires_at=row.expires_at,
+        passphrase_hash=row.passphrase_hash,
+        revoked_at=row.revoked_at,
+        access_count=row.access_count,
+        last_accessed_at=row.last_accessed_at,
     )

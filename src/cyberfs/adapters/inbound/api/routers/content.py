@@ -31,7 +31,7 @@ def _service(request: Request) -> ContentService:
     return service
 
 
-def _stream_response(plan: DownloadPlan) -> StreamingResponse:
+def stream_response(plan: DownloadPlan) -> StreamingResponse:
     headers = {
         # The *plaintext* length: what the caller receives, which is not the
         # stored object's size once encryption is in play.
@@ -120,7 +120,7 @@ async def download_content(
     plan = await _service(request).download(
         uow, user, node_id, range_header=range_header, version_id=version_id
     )
-    return _stream_response(plan)
+    return stream_response(plan)
 
 
 @router.get(

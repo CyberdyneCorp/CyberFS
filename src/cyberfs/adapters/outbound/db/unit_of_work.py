@@ -20,6 +20,7 @@ from cyberfs.adapters.outbound.db.repositories import (
     SqlGrantRepository,
     SqlKeyRepository,
     SqlNodeRepository,
+    SqlPublicLinkRepository,
     SqlQuotaRepository,
     SqlUserRepository,
 )
@@ -49,11 +50,7 @@ def translate_integrity_error(exc: IntegrityError) -> CyberFSError | None:
 
 
 class SqlUnitOfWork:
-    """Implements the `UnitOfWork` port.
-
-    The public-link repository is added with the sharing capability; its port
-    is already defined in `domain/ports/repositories`.
-    """
+    """Implements the `UnitOfWork` port over one SQLAlchemy session."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -73,6 +70,7 @@ class SqlUnitOfWork:
         self.versions = SqlFileVersionRepository(session)
         self.grants = SqlGrantRepository(session)
         self.keys = SqlKeyRepository(session)
+        self.public_links = SqlPublicLinkRepository(session)
         self.quotas = SqlQuotaRepository(session)
         self.audit = SqlAuditRepository(session)
         return self

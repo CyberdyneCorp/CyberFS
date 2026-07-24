@@ -25,11 +25,13 @@ from cyberfs.adapters.inbound.api.composition import (
     build_identity,
     build_object_store,
     build_provisioning,
+    build_sharing,
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
 from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
+from cyberfs.adapters.inbound.api.routers import shares as shares_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.health import HealthService
 from cyberfs.application.nodes import NodeService
@@ -107,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.objects = build_object_store(settings)
     app.state.content = build_content(settings, app.state.objects)
     app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
+    app.state.sharing = build_sharing(settings, app.state.http)
     app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still
@@ -128,6 +131,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(nodes_router.router)
     app.include_router(content_router.router)
+    app.include_router(shares_router.router)
     if settings.metrics_enabled:
         app.include_router(metrics.router)
 

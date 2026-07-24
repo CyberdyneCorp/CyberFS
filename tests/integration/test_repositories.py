@@ -526,3 +526,19 @@ async def test_encryption_default_survives_a_round_trip(uow: SqlUnitOfWork) -> N
     fetched = await uow.nodes.get(node.id)
     assert fetched is not None
     assert fetched.encryption_default is EncryptionDefault.ON
+
+
+async def test_a_changed_owner_is_persisted(uow: SqlUnitOfWork) -> None:
+    """Regression: `apply_node` dropped owner_id, so ownership transfer was
+    silently a no-op against the database while passing in-memory."""
+    alice = await make_user(uow, "alice")
+    bob = await make_user(uow, "bob")
+    node = await add_folder(uow, alice, "handover", alice.root_folder_id)
+
+    node.owner_id = bob.id
+    await uow.nodes.update(node)
+    await uow.commit()
+
+    stored = await uow.nodes.get(node.id)
+    assert stored is not None
+    assert stored.owner_id == bob.id

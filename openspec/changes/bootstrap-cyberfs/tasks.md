@@ -64,16 +64,16 @@
 
 ## 6. Sharing
 
-- [ ] 6.1 Implement the role value object with the total order `viewer < editor < owner` and the per-role operation matrix
-- [ ] 6.2 Implement effective-permission resolution as a pure domain function over ownership, direct grants, and ancestor grants, taking the maximum with no deny semantics
-- [ ] 6.3 Implement grant creation with recipient lookup by subject or email via CyberdyneAuth, regrant replacing the existing role, and refusal of self-grant and of grants by non-owners
-- [ ] 6.4 Implement grant listing for owners, the "shared with me" listing returning only subtree roots, owner-initiated revocation, and recipient self-removal
-- [ ] 6.5 Ensure move in and out of shared folders immediately changes inherited access, and that new descendants inherit without an extra grant
-- [ ] 6.6 Implement public links: ≥128-bit token not encoding the node id, optional expiry, optional passphrase with rate-limited attempts, `viewer`-only, revocation, `404` when expired or revoked, and no traversal above the linked folder
-- [ ] 6.7 Implement ownership transfer: quota moved, `507` when the recipient cannot accommodate it, previous owner left with `editor` by default, transaction aborted if any key rewrap fails
-- [ ] 6.8 Implement share auditing for grants, regrants, revocations, transfers, link creation, and link use, with immutable audit records rejecting modification even by admins
-- [ ] 6.9 Unit tests for every inheritance and effective-permission scenario in `sharing/spec.md`, including highest-role-wins in both directions
-- [ ] 6.10 Integration test asserting revocation denies the very next request with no reliance on cache expiry
+- [x] 6.1 Implement the role value object with the total order `viewer < editor < owner` and the per-role operation matrix
+- [x] 6.2 Implement effective-permission resolution as a pure domain function over ownership, direct grants, and ancestor grants, taking the maximum with no deny semantics
+- [x] 6.3 Implement grant creation with recipient lookup by subject or email via CyberdyneAuth, regrant replacing the existing role, and refusal of self-grant and of grants by non-owners (CyberdyneAuth publishes no global email lookup — only the org-scoped `/orgs/{id}/members` directory — so email resolution works within the sharer's organisations; sharing by subject is unrestricted)
+- [x] 6.4 Implement grant listing for owners, the "shared with me" listing returning only subtree roots, owner-initiated revocation, and recipient self-removal
+- [x] 6.5 Ensure move in and out of shared folders immediately changes inherited access, and that new descendants inherit without an extra grant
+- [x] 6.6 Implement public links: ≥128-bit token not encoding the node id, optional expiry, optional passphrase with rate-limited attempts, `viewer`-only, revocation, `404` when expired or revoked, and no traversal above the linked folder
+- [x] 6.7 Implement ownership transfer: quota moved, `507` when the recipient cannot accommodate it, previous owner left with `editor` by default, transaction aborted if any key rewrap fails
+- [x] 6.8 Implement share auditing for grants, regrants, revocations, transfers, link creation, and link use, with immutable audit records rejecting modification even by admins
+- [x] 6.9 Unit tests for every inheritance and effective-permission scenario in `sharing/spec.md`, including highest-role-wins in both directions
+- [x] 6.10 Integration test asserting revocation denies the very next request with no reliance on cache expiry
 
 ## 7. Content encryption
 

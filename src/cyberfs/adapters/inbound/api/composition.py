@@ -6,6 +6,7 @@ Kept out of `app.py` so the factory stays readable as more subsystems land.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from datetime import timedelta
 
 import httpx
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from cyberfs.adapters.outbound.audit_log import LoggingAuditSink
 from cyberfs.adapters.outbound.auth.dev_mode import DevModeVerifier
+from cyberfs.adapters.outbound.auth.directory import CyberdyneDirectory
 from cyberfs.adapters.outbound.auth.discovery import DiscoveryClient
 from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClient
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
@@ -23,6 +25,7 @@ from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
 from cyberfs.application.content import ContentService
 from cyberfs.application.provisioning import ProvisioningService
+from cyberfs.application.sharing import SharingService
 from cyberfs.domain.auth.policy import CacheWindow
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
 from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
@@ -198,3 +201,34 @@ class ObjectStoreHealthProbe:
             criticality=self.criticality,
             latency_ms=(time.perf_counter() - started) * 1000,
         )
+
+
+def build_sharing(settings: Settings, http: httpx.AsyncClient) -> SharingService:
+    """Wire the recipient directory, or a stub when auth is stubbed."""
+    if settings.auth_dev_mode:
+        return SharingService(
+            LocalOnlyDirectory(),
+            passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
+        )
+    discovery = build_discovery(settings, http)
+    service_tokens = ServiceTokenProvider(
+        discovery,
+        http,
+        client_id=settings.cyberfs_client_id,
+        client_secret=settings.cyberfs_client_secret.get_secret_value(),
+    )
+    return SharingService(
+        CyberdyneDirectory(settings.cyberdyne_auth_base_url, service_tokens, http),
+        passphrase_attempts_per_min=settings.public_link_max_attempts_per_min,
+    )
+
+
+class LocalOnlyDirectory:
+    """Resolves subjects only, for local development without CyberdyneAuth.
+
+    Sharing by email needs the real org directory; under `AUTH_DEV_MODE` any
+    identifier is taken at face value as a subject.
+    """
+
+    async def find_subject(self, identifier: str, *, within_orgs: Sequence[str] = ()) -> str | None:
+        return identifier.strip() or None

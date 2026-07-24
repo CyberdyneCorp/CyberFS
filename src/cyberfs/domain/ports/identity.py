@@ -15,6 +15,7 @@ stops a caller from accidentally using the cheap one where freshness matters.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 from cyberfs.domain.auth.principal import Principal
@@ -42,8 +43,14 @@ class TokenIntrospector(Protocol):
 
 
 class UserDirectory(Protocol):
-    """Resolves a share recipient to a CyberdyneAuth subject."""
+    """Resolves a share recipient to a CyberdyneAuth subject.
 
-    async def find_subject(self, identifier: str) -> str | None:
+    CyberdyneAuth exposes no global email lookup -- only an *org-scoped*
+    member directory. Sharing by email therefore works within organisations
+    the sharer belongs to, and the caller's orgs are passed in rather than
+    assumed. Sharing by subject needs no lookup at all.
+    """
+
+    async def find_subject(self, identifier: str, *, within_orgs: Sequence[str] = ()) -> str | None:
         """Resolve a subject or email to a subject id, or None if unknown."""
         ...

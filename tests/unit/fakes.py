@@ -18,7 +18,7 @@ from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
-from cyberfs.domain.sharing import Grant, Role
+from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -250,6 +250,30 @@ class FakeGrantRepository:
         return len(doomed)
 
 
+class FakePublicLinkRepository:
+    def __init__(self) -> None:
+        self.by_id: dict[uuid.UUID, PublicLink] = {}
+
+    async def get(self, link_id: uuid.UUID) -> PublicLink | None:
+        return self.by_id.get(link_id)
+
+    async def get_by_token_hash(self, token_hash: str) -> PublicLink | None:
+        return next((link for link in self.by_id.values() if link.token_hash == token_hash), None)
+
+    async def add(self, link: PublicLink) -> None:
+        self.by_id[link.id] = link
+
+    async def update(self, link: PublicLink) -> None:
+        self.by_id[link.id] = link
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[PublicLink, ...]:
+        return tuple(link for link in self.by_id.values() if link.node_id == node_id)
+
+    async def list_active(self, *, limit: int, cursor: str | None = None) -> Page[PublicLink]:
+        active = [link for link in self.by_id.values() if not link.is_revoked]
+        return Page(items=tuple(active[:limit]))
+
+
 class FakeQuotaRepository:
     """Recomputes from the node rows, so reconciliation tests are meaningful."""
 
@@ -296,6 +320,7 @@ class FakeUnitOfWork:
         self.nodes = FakeNodeRepository()
         self.versions = FakeFileVersionRepository()
         self.grants = FakeGrantRepository()
+        self.public_links = FakePublicLinkRepository()
         self.keys = FakeKeyRepository()
         self.quotas = FakeQuotaRepository(self.nodes)
         self.audit = FakeAuditRepository()

@@ -35,7 +35,7 @@ from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
-from cyberfs.domain.sharing import Grant, Role
+from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
 
@@ -436,6 +436,7 @@ __all__ = [
     "SqlGrantRepository",
     "SqlKeyRepository",
     "SqlNodeRepository",
+    "SqlPublicLinkRepository",
     "SqlQuotaRepository",
     "SqlUserRepository",
     "decode_cursor",
@@ -548,3 +549,45 @@ class SqlFileVersionRepository:
         for version in doomed:
             await self.delete(version.id)
         return doomed
+
+
+class SqlPublicLinkRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, link_id: uuid.UUID) -> PublicLink | None:
+        row = await self._session.get(m.PublicLinkRow, link_id)
+        return mappers.link_from_row(row) if row else None
+
+    async def get_by_token_hash(self, token_hash: str) -> PublicLink | None:
+        result = await self._session.execute(
+            select(m.PublicLinkRow).where(m.PublicLinkRow.token_hash == token_hash)
+        )
+        row = result.scalar_one_or_none()
+        return mappers.link_from_row(row) if row else None
+
+    async def add(self, link: PublicLink) -> None:
+        self._session.add(mappers.link_to_row(link))
+
+    async def update(self, link: PublicLink) -> None:
+        row = await self._session.get(m.PublicLinkRow, link.id)
+        if row is not None:
+            mappers.apply_link(row, link)
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[PublicLink, ...]:
+        result = await self._session.execute(
+            select(m.PublicLinkRow)
+            .where(m.PublicLinkRow.node_id == node_id)
+            .order_by(m.PublicLinkRow.created_at.desc())
+        )
+        return tuple(mappers.link_from_row(r) for r in result.scalars())
+
+    async def list_active(self, *, limit: int, cursor: str | None = None) -> Page[PublicLink]:
+        stmt = (
+            select(m.PublicLinkRow)
+            .where(m.PublicLinkRow.revoked_at.is_(None))
+            .order_by(m.PublicLinkRow.created_at.desc(), m.PublicLinkRow.id)
+            .limit(limit + 1)
+        )
+        rows = list((await self._session.execute(stmt)).scalars())
+        return _paginate(rows, limit, mappers.link_from_row, lambda r: r.created_at.isoformat())
