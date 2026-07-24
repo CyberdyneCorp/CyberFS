@@ -18,13 +18,17 @@ from cyberfs.adapters.inbound.api import health, metrics
 from cyberfs.adapters.inbound.api.composition import (
     AuthHealthProbe,
     DatabaseHealthProbe,
+    ObjectStoreHealthProbe,
     build_authentication,
+    build_content,
     build_http_client,
     build_identity,
+    build_object_store,
     build_provisioning,
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
+from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.health import HealthService
@@ -46,12 +50,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         encryption_default_on=settings.encryption_default_on,
         auth_dev_mode=settings.auth_dev_mode,
     )
+    await _provision_bucket(app)
     try:
         yield
     finally:
         await app.state.http.aclose()
         await app.state.engine.dispose()
         logger.info("stopping", version=__version__)
+
+
+async def _provision_bucket(app: FastAPI) -> None:
+    """Create the content bucket if absent.
+
+    Deliberately non-fatal: `deployment/spec.md` requires liveness to be
+    independent of dependencies, so a MinIO blip at boot must not stop the
+    process. Readiness reports the outage, and the replica stays out of
+    rotation until the store is reachable.
+    """
+    try:
+        await app.state.objects.ensure_bucket()
+    except Exception as exc:
+        logger.error("bucket_provisioning_failed", error=type(exc).__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -85,6 +104,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_tree_depth=settings.max_tree_depth,
         page_size_max=settings.page_size_max,
     )
+    app.state.objects = build_object_store(settings)
+    app.state.content = build_content(settings, app.state.objects)
+    app.state.health.register(ObjectStoreHealthProbe(app.state.objects))
     app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still
@@ -105,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(nodes_router.router)
+    app.include_router(content_router.router)
     if settings.metrics_enabled:
         app.include_router(metrics.router)
 

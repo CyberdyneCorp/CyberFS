@@ -12,7 +12,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from cyberfs.application.nodes import NodeView
-from cyberfs.domain.nodes import EncryptionDefault, Node, NodeKind
+from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
 
 MAX_NAME_LENGTH = 255
@@ -113,3 +113,38 @@ class SearchResults(BaseModel):
 class DeleteResult(BaseModel):
     #: How many nodes the recursive soft delete covered.
     deleted: int
+
+
+class VersionSummary(BaseModel):
+    """One retained revision. Carries no key material and no object key."""
+
+    id: uuid.UUID
+    sequence: int
+    size_bytes: int
+    content_type: str
+    encrypted: bool
+    created_at: datetime
+    created_by: str
+    is_current: bool = False
+
+    @classmethod
+    def of(cls, version: FileVersion, *, current: bool = False) -> VersionSummary:
+        return cls(
+            id=version.id,
+            sequence=version.sequence,
+            size_bytes=version.size_bytes,
+            content_type=version.content_type,
+            encrypted=version.encrypted,
+            created_at=version.created_at,
+            created_by=version.created_by,
+            is_current=current,
+        )
+
+
+class VersionList(BaseModel):
+    items: list[VersionSummary]
+
+    @classmethod
+    def of(cls, versions: tuple[FileVersion, ...]) -> VersionList:
+        newest = versions[0].id if versions else None
+        return cls(items=[VersionSummary.of(v, current=v.id == newest) for v in versions])

@@ -232,7 +232,13 @@ class NodeService:
         _ensure_precondition(node, if_match)
         if node.is_root:
             raise ValidationError("a root folder cannot be deleted")
+
+        # Measured before the delete, while the subtree is still visible.
+        bytes_trashed = await self._subtree_bytes(uow, node)
         count = await uow.nodes.soft_delete_subtree(node.id, moment)
+        # The bytes are still stored, so they still count -- they just move
+        # from live to trashed until a purge actually frees them.
+        await self._move_bytes(uow, node.owner_id, bytes_trashed, moment, to_trash=True)
         await uow.flush()
         return count
 
@@ -266,6 +272,8 @@ class NodeService:
 
         node.restore(moment)
         await uow.nodes.update(node)
+        restored = await self._subtree_bytes(uow, node)
+        await self._move_bytes(uow, node.owner_id, restored, moment, to_trash=False)
         await uow.flush()
         return await self._view(uow, node, Role.OWNER)
 
@@ -352,20 +360,24 @@ class NodeService:
         await uow.flush()
 
         if source.is_file:
-            copy.size_bytes = await self._duplicate_content(source, copy, content)
+            copy.size_bytes = await self._duplicate_content(uow, source, copy, now, content)
             await self._charge(uow, user, copy.size_bytes, now)
             await uow.nodes.update(copy)
         return copy
 
     @staticmethod
     async def _duplicate_content(
-        source: Node, target: Node, content: ContentDuplicator | None
+        uow: UnitOfWork,
+        source: Node,
+        target: Node,
+        now: datetime,
+        content: ContentDuplicator | None,
     ) -> int:
         if content is None:
-            # No object store wired: metadata-only copy. The storage
-            # capability supplies the duplicator.
+            # No duplicator wired (a metadata-only test double); the copy has
+            # no content rather than content nobody can reach.
             return 0
-        return await content.duplicate(source, target)
+        return await content.duplicate(uow, source, target, now)
 
     @staticmethod
     async def _charge(uow: UnitOfWork, user: User, size_bytes: int, now: datetime) -> None:
@@ -377,6 +389,34 @@ class NodeService:
             return
         usage.ensure_room_for(user.quota_bytes, size_bytes)
         usage.charge_live(size_bytes, now)
+        await uow.quotas.update(usage)
+
+    @staticmethod
+    async def _subtree_bytes(uow: UnitOfWork, node: Node) -> int:
+        """Total content bytes in a node and everything beneath it."""
+        subtree = await uow.nodes.descendants(
+            node.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
+        )
+        return sum(n.size_bytes for n in (node, *subtree) if n.is_file)
+
+    @staticmethod
+    async def _move_bytes(
+        uow: UnitOfWork,
+        owner_id: uuid.UUID,
+        size_bytes: int,
+        now: datetime,
+        *,
+        to_trash: bool,
+    ) -> None:
+        if size_bytes <= 0:
+            return
+        usage = await uow.quotas.get(owner_id)
+        if usage is None:
+            return
+        if to_trash:
+            usage.move_to_trash(size_bytes, now)
+        else:
+            usage.restore_from_trash(size_bytes, now)
         await uow.quotas.update(usage)
 
     # --- guards --------------------------------------------------------
@@ -426,13 +466,14 @@ def _ensure_precondition(node: Node, if_match: str | None) -> None:
 
 
 class ContentDuplicator(Protocol):
-    """Copies the bytes behind a file.
+    """Copies the content behind a file.
 
     Structural copying -- the tree, ownership, and quota -- is this module's
-    job. Duplicating the stored objects belongs to the storage capability, so
-    it arrives through this port.
+    job. Duplicating the stored object *and the version row that names it*
+    belongs to the storage capability, so both arrive through this port: a copy
+    with bytes but no version would be a file nobody can download.
     """
 
-    async def duplicate(self, source: Node, target: Node) -> int:
+    async def duplicate(self, uow: UnitOfWork, source: Node, target: Node, now: datetime) -> int:
         """Copy content from `source` to `target`; returns bytes copied."""
         ...

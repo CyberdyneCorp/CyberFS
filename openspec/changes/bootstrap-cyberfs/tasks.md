@@ -41,7 +41,7 @@
 - [x] 4.2 Implement folder create, list with deterministic ordering and cursor pagination, rename, and recursive soft delete
 - [x] 4.3 Implement path derivation on read so renaming a folder rewrites no descendant rows
 - [x] 4.4 Implement move with cycle detection inside the transaction, `cross_owner_move` refusal, and serialization of concurrent moves
-- [x] 4.5 Implement copy of a file and of a folder subtree: new owner, fresh objects, quota charged to the copier, no grants carried over (structural copy, ownership, and quota done; byte duplication goes through the `ContentDuplicator` port, whose MinIO adapter lands in 5.1)
+- [x] 4.5 Implement copy of a file and of a folder subtree: new owner, fresh objects, quota charged to the copier, no grants carried over (byte duplication completed in 5.1 via the `ContentDuplicator` port)
 - [x] 4.6 Implement optimistic concurrency via an `If-Match` version token returning `412` on mismatch, and `409` on concurrent same-name creation
 - [x] 4.7 Implement node metadata read including the caller's effective permission and encryption state
 - [x] 4.8 Implement metadata search scoped to nodes the caller owns or is granted, with no content matching
@@ -49,18 +49,18 @@
 
 ## 5. File storage — objects, versions, quotas
 
-- [ ] 5.1 Define the `ObjectStore` port and implement the MinIO adapter with chunked streaming put/get/delete and range reads
-- [ ] 5.2 Implement object key derivation `{owner_id}/{node_id}/{version_id}` containing no user-supplied text
-- [ ] 5.3 Implement streaming upload: bounded memory at `UPLOAD_CHUNK_BYTES`, plaintext SHA-256 computed in-flight, metadata written only after the object write succeeds, `413` above `MAX_UPLOAD_BYTES`, `400` on declared-length mismatch
-- [ ] 5.4 Implement streaming download with correct plaintext `Content-Length`, `Range` support returning `206`, `404` (not `403`) for callers with no grant, and digest verification raising `integrity_failure`
-- [ ] 5.5 Assert in code review and in a test that no endpoint ever returns a presigned MinIO URL
-- [ ] 5.6 Implement versioning: new version on content replace, restore-as-new-version, pruning beyond `VERSION_RETENTION_COUNT`, no version on metadata-only edits
-- [ ] 5.7 Implement quota accounting charged to the owner, covering live, trashed, and retained-version bytes; `507` on exceed; recipients never charged
-- [ ] 5.8 Implement the trash: soft delete hides from listings and search, restore to original parent or to root when the parent is gone, grants revoked on delete
-- [ ] 5.9 Implement the purge job for nodes past `TRASH_RETENTION_DAYS`, deleting metadata, all version objects, and all wrapped keys, and releasing quota
-- [ ] 5.10 Implement the orphan reaper for objects older than `ORPHAN_GRACE_MINUTES` with no referencing row, recording reclaimed bytes
-- [ ] 5.11 Implement the quota reconciliation job recomputing usage from metadata and correcting drift
-- [ ] 5.12 Integration tests against real MinIO: large streamed upload with bounded memory, interrupted upload leaving no visible file, range reads, orphan reaping, purge releasing quota
+- [x] 5.1 Define the `ObjectStore` port and implement the MinIO adapter with chunked streaming put/get/delete and range reads
+- [x] 5.2 Implement object key derivation `{owner_id}/{node_id}/{version_id}` containing no user-supplied text
+- [x] 5.3 Implement streaming upload: bounded memory at `UPLOAD_CHUNK_BYTES`, plaintext SHA-256 computed in-flight, metadata written only after the object write succeeds, `413` above `MAX_UPLOAD_BYTES`, `400` on declared-length mismatch
+- [x] 5.4 Implement streaming download with correct plaintext `Content-Length`, `Range` support returning `206`, `404` (not `403`) for callers with no grant, and digest verification raising `integrity_failure`
+- [x] 5.5 Assert in code review and in a test that no endpoint ever returns a presigned MinIO URL
+- [x] 5.6 Implement versioning: new version on content replace, restore-as-new-version, pruning beyond `VERSION_RETENTION_COUNT`, no version on metadata-only edits
+- [x] 5.7 Implement quota accounting charged to the owner, covering live, trashed, and retained-version bytes; `507` on exceed; recipients never charged
+- [x] 5.8 Implement the trash: soft delete hides from listings and search, restore to original parent or to root when the parent is gone, grants revoked on delete
+- [x] 5.9 Implement the purge job for nodes past `TRASH_RETENTION_DAYS`, deleting metadata, all version objects, and all wrapped keys, and releasing quota
+- [x] 5.10 Implement the orphan reaper for objects older than `ORPHAN_GRACE_MINUTES` with no referencing row, recording reclaimed bytes
+- [x] 5.11 Implement the quota reconciliation job recomputing usage from metadata and correcting drift
+- [x] 5.12 Integration tests against real MinIO: large streamed upload with bounded memory, interrupted upload leaving no visible file, range reads, orphan reaping, purge releasing quota
 
 ## 6. Sharing
 

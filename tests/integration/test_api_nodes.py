@@ -26,9 +26,7 @@ BOB = {"Authorization": "Bearer dev:bob"}
 @pytest.fixture
 def client(engine: object, session_factory: object) -> Iterator[TestClient]:
     """An app wired to the integration database, with the auth stub enabled."""
-    settings = build_settings().model_copy(
-        update={"auth_dev_mode": True, "environment": Environment.TEST}
-    )
+    settings = build_settings(auth_dev_mode=True, environment=Environment.TEST)
     app = create_app(settings)
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

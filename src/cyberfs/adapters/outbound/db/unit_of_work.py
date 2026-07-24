@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cyberfs.adapters.outbound.db.repositories import (
     SqlAuditRepository,
+    SqlFileVersionRepository,
     SqlGrantRepository,
     SqlKeyRepository,
     SqlNodeRepository,
@@ -48,10 +49,10 @@ def translate_integrity_error(exc: IntegrityError) -> CyberFSError | None:
 
 
 class SqlUnitOfWork:
-    """Implements the `UnitOfWork` port for the repositories that exist today.
+    """Implements the `UnitOfWork` port.
 
-    Version, grant, and public-link repositories are added as their capabilities
-    land; the ports for them are already defined in `domain/ports/repositories`.
+    The public-link repository is added with the sharing capability; its port
+    is already defined in `domain/ports/repositories`.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -69,6 +70,7 @@ class SqlUnitOfWork:
         session = self._session
         self.users = SqlUserRepository(session)
         self.nodes = SqlNodeRepository(session)
+        self.versions = SqlFileVersionRepository(session)
         self.grants = SqlGrantRepository(session)
         self.keys = SqlKeyRepository(session)
         self.quotas = SqlQuotaRepository(session)

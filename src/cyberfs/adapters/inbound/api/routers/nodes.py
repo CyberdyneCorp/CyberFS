@@ -141,7 +141,16 @@ async def copy_node(
     uow: UnitOfWorkDep,
     response: Response,
 ) -> NodeDetail:
-    view = await _service(request).copy(uow, user, node_id, body.parent_id, name=body.name)
+    view = await _service(request).copy(
+        uow,
+        user,
+        node_id,
+        body.parent_id,
+        name=body.name,
+        # The content service duplicates objects server-side, so a copy never
+        # transits the API and encrypted content is copied as ciphertext.
+        content=request.app.state.content,
+    )
     await uow.commit()
     return _with_etag(response, NodeDetail.of_view(view))
 

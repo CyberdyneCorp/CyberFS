@@ -8,14 +8,16 @@ is where real constraint and transaction behaviour actually lives.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from types import TracebackType
 
 from cyberfs.domain.audit import AuditRecord
+from cyberfs.domain.errors import NotFoundError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import Node
+from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.ports.repositories import Page
+from cyberfs.domain.ports.storage import StoredObject
 from cyberfs.domain.sharing import Grant, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -180,6 +182,34 @@ class FakeKeyRepository:
         return len(doomed)
 
 
+class FakeFileVersionRepository:
+    def __init__(self) -> None:
+        self.by_id: dict[uuid.UUID, FileVersion] = {}
+
+    async def get(self, version_id: uuid.UUID) -> FileVersion | None:
+        return self.by_id.get(version_id)
+
+    async def add(self, version: FileVersion) -> None:
+        self.by_id[version.id] = version
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[FileVersion, ...]:
+        found = [v for v in self.by_id.values() if v.node_id == node_id]
+        return tuple(sorted(found, key=lambda v: v.sequence, reverse=True))
+
+    async def next_sequence(self, node_id: uuid.UUID) -> int:
+        found = [v.sequence for v in self.by_id.values() if v.node_id == node_id]
+        return max(found, default=0) + 1
+
+    async def delete(self, version_id: uuid.UUID) -> None:
+        self.by_id.pop(version_id, None)
+
+    async def prune_beyond(self, node_id: uuid.UUID, keep: int) -> tuple[FileVersion, ...]:
+        doomed = (await self.list_for_node(node_id))[keep:]
+        for version in doomed:
+            await self.delete(version.id)
+        return doomed
+
+
 class FakeGrantRepository:
     def __init__(self) -> None:
         self.by_id: dict[uuid.UUID, Grant] = {}
@@ -221,8 +251,11 @@ class FakeGrantRepository:
 
 
 class FakeQuotaRepository:
-    def __init__(self) -> None:
+    """Recomputes from the node rows, so reconciliation tests are meaningful."""
+
+    def __init__(self, nodes: FakeNodeRepository | None = None) -> None:
         self.by_user: dict[uuid.UUID, QuotaUsage] = {}
+        self._nodes = nodes
 
     async def get(self, user_id: uuid.UUID) -> QuotaUsage | None:
         return self.by_user.get(user_id)
@@ -234,7 +267,14 @@ class FakeQuotaRepository:
         self.by_user[usage.user_id] = usage
 
     async def recompute(self, user_id: uuid.UUID) -> QuotaUsage:
-        return self.by_user.get(user_id) or QuotaUsage(user_id=user_id)
+        if self._nodes is None:
+            return QuotaUsage(user_id=user_id)
+        owned = [n for n in self._nodes.by_id.values() if n.owner_id == user_id and n.is_file]
+        return QuotaUsage(
+            user_id=user_id,
+            live_bytes=sum(n.size_bytes for n in owned if not n.is_deleted),
+            trashed_bytes=sum(n.size_bytes for n in owned if n.is_deleted),
+        )
 
 
 class FakeAuditRepository:
@@ -254,9 +294,10 @@ class FakeUnitOfWork:
     def __init__(self) -> None:
         self.users = FakeUserRepository()
         self.nodes = FakeNodeRepository()
+        self.versions = FakeFileVersionRepository()
         self.grants = FakeGrantRepository()
         self.keys = FakeKeyRepository()
-        self.quotas = FakeQuotaRepository()
+        self.quotas = FakeQuotaRepository(self.nodes)
         self.audit = FakeAuditRepository()
         self.committed = 0
         self.rolled_back = 0
@@ -312,3 +353,66 @@ class FakeKeyProvider:
 
     def unwrap_kek(self, wrapped: bytes, *, master_key_id: str) -> bytes:
         return wrapped.removeprefix(b"wrapped:")
+
+
+class FakeObjectStore:
+    """In-memory object store implementing the `ObjectStore` port."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.timestamps: dict[str, datetime] = {}
+        self.deleted: list[str] = []
+
+    async def put(
+        self,
+        key: str,
+        data: AsyncIterator[bytes],
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> int:
+        buffer = bytearray()
+        async for chunk in data:
+            buffer.extend(chunk)
+        self.objects[key] = bytes(buffer)
+        return len(buffer)
+
+    async def get(
+        self, key: str, *, offset: int = 0, length: int | None = None
+    ) -> AsyncIterator[bytes]:
+        blob = self.objects.get(key)
+        if blob is None:
+            raise NotFoundError("stored object is missing", key=key)
+        end = offset + length if length is not None else len(blob)
+        # Chunked deliberately, so callers cannot assume one whole read.
+        window = blob[offset:end]
+        for start in range(0, len(window), 8):
+            yield window[start : start + 8]
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+        self.deleted.append(key)
+
+    async def copy(self, source_key: str, target_key: str) -> int:
+        blob = self.objects.get(source_key)
+        if blob is None:
+            raise NotFoundError("source object is missing", key=source_key)
+        self.objects[target_key] = blob
+        return len(blob)
+
+    async def stat(self, key: str) -> int | None:
+        blob = self.objects.get(key)
+        return len(blob) if blob is not None else None
+
+    async def list_keys(self, prefix: str = "") -> AsyncIterator[StoredObject]:
+        for key, blob in list(self.objects.items()):
+            if key.startswith(prefix):
+                yield StoredObject(key=key, size=len(blob), last_modified=self.timestamps.get(key))
+
+    async def ensure_bucket(self) -> None:
+        return None
+
+
+async def stream(payload: bytes, chunk: int = 8) -> AsyncIterator[bytes]:
+    """Feed bytes in small pieces, as a real request body would arrive."""
+    for start in range(0, len(payload), chunk):
+        yield payload[start : start + chunk]

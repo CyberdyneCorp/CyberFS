@@ -9,6 +9,7 @@ import time
 from datetime import timedelta
 
 import httpx
+from minio import Minio
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from cyberfs.adapters.outbound.audit_log import LoggingAuditSink
@@ -18,11 +19,14 @@ from cyberfs.adapters.outbound.auth.introspection import TokenIntrospectionClien
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
 from cyberfs.adapters.outbound.auth.verifier import JwtTokenVerifier
 from cyberfs.adapters.outbound.crypto import MasterKeyProvider
+from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
 from cyberfs.application.authentication import AUTH_FAILURE_WINDOW, AuthenticationService
+from cyberfs.application.content import ContentService
 from cyberfs.application.provisioning import ProvisioningService
 from cyberfs.domain.auth.policy import CacheWindow
 from cyberfs.domain.health import ComponentHealth, ComponentStatus, Criticality
 from cyberfs.domain.ports.identity import TokenIntrospector, TokenVerifier
+from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure.db import ping
 from cyberfs.infrastructure.settings import Settings
@@ -151,3 +155,46 @@ def build_provisioning(settings: Settings) -> ProvisioningService:
         ),
         default_quota_bytes=settings.default_quota_bytes,
     )
+
+
+def build_object_store(settings: Settings) -> MinioObjectStore:
+    return MinioObjectStore(
+        Minio(
+            settings.minio_endpoint,
+            access_key=settings.minio_access_key.get_secret_value(),
+            secret_key=settings.minio_secret_key.get_secret_value(),
+            secure=settings.minio_secure,
+            region=settings.minio_region,
+        ),
+        settings.minio_bucket,
+        part_bytes=settings.upload_chunk_bytes,
+    )
+
+
+def build_content(settings: Settings, objects: ObjectStore) -> ContentService:
+    return ContentService(
+        objects,
+        max_upload_bytes=settings.max_upload_bytes,
+        upload_chunk_bytes=settings.upload_chunk_bytes,
+        version_retention_count=settings.version_retention_count,
+    )
+
+
+class ObjectStoreHealthProbe:
+    """MinIO is required: without it no content can be read or written."""
+
+    name = "minio"
+    criticality = Criticality.REQUIRED
+
+    def __init__(self, store: MinioObjectStore) -> None:
+        self._store = store
+
+    async def check(self) -> ComponentHealth:
+        started = time.perf_counter()
+        await self._store.stat("__healthcheck__")
+        return ComponentHealth(
+            name=self.name,
+            status=ComponentStatus.UP,
+            criticality=self.criticality,
+            latency_ms=(time.perf_counter() - started) * 1000,
+        )

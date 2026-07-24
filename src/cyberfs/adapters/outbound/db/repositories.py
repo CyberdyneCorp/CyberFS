@@ -33,7 +33,7 @@ from cyberfs.adapters.outbound.db import models as m
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import Node, NodeKind
+from cyberfs.domain.nodes import FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.sharing import Grant, Role
 from cyberfs.domain.users import QuotaUsage, User
@@ -432,6 +432,7 @@ def _paginate[R, T](
 __all__ = [
     "Role",
     "SqlAuditRepository",
+    "SqlFileVersionRepository",
     "SqlGrantRepository",
     "SqlKeyRepository",
     "SqlNodeRepository",
@@ -504,3 +505,46 @@ class SqlGrantRepository:
             await self._session.execute(delete(m.GrantRow).where(m.GrantRow.node_id == node_id)),
         )
         return int(result.rowcount or 0)
+
+
+class SqlFileVersionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, version_id: uuid.UUID) -> FileVersion | None:
+        row = await self._session.get(m.FileVersionRow, version_id)
+        return mappers.version_from_row(row) if row else None
+
+    async def add(self, version: FileVersion) -> None:
+        self._session.add(mappers.version_to_row(version))
+
+    async def list_for_node(self, node_id: uuid.UUID) -> tuple[FileVersion, ...]:
+        result = await self._session.execute(
+            select(m.FileVersionRow)
+            .where(m.FileVersionRow.node_id == node_id)
+            .order_by(m.FileVersionRow.sequence.desc())
+        )
+        return tuple(mappers.version_from_row(r) for r in result.scalars())
+
+    async def next_sequence(self, node_id: uuid.UUID) -> int:
+        highest = await self._session.scalar(
+            select(func.max(m.FileVersionRow.sequence)).where(m.FileVersionRow.node_id == node_id)
+        )
+        return int(highest or 0) + 1
+
+    async def delete(self, version_id: uuid.UUID) -> None:
+        await self._session.execute(
+            delete(m.FileVersionRow).where(m.FileVersionRow.id == version_id)
+        )
+
+    async def prune_beyond(self, node_id: uuid.UUID, keep: int) -> tuple[FileVersion, ...]:
+        """Drop the oldest versions past the retention count.
+
+        Returns them so the caller can delete their objects and release the
+        quota they were holding -- pruning metadata alone would orphan bytes.
+        """
+        versions = await self.list_for_node(node_id)
+        doomed = versions[keep:]
+        for version in doomed:
+            await self.delete(version.id)
+        return doomed

@@ -148,6 +148,7 @@ def test_error_never_echoes_key_material() -> None:
 
 def test_associated_data_binds_the_wrap_to_its_purpose() -> None:
     """A KEK-wrapping blob must not be replayable where a DEK is expected."""
+    from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     subject = provider()
@@ -155,7 +156,7 @@ def test_associated_data_binds_the_wrap_to_its_purpose() -> None:
     nonce, sealed = wrapped[:NONCE_BYTES], wrapped[NONCE_BYTES:]
 
     assert AESGCM(MASTER_A).decrypt(nonce, sealed, KEK_ASSOCIATED_DATA)
-    with pytest.raises(Exception, match=""):
+    with pytest.raises(InvalidTag):
         AESGCM(MASTER_A).decrypt(nonce, sealed, b"cyberfs/dek/v1")
 
 

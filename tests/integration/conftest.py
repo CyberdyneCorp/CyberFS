@@ -27,21 +27,28 @@ def database_url() -> str:
     return os.environ.get("CYBERFS_TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
 
 
-def build_settings() -> Settings:
-    return Settings(
-        environment=Environment.TEST,
-        database_url=database_url(),
-        redis_url="redis://localhost:6380/0",
-        minio_endpoint="localhost:9000",
-        minio_access_key="key",
-        minio_secret_key="integration-minio-value",
-        minio_bucket="cyberfs-content",
-        cyberdyne_auth_base_url="https://auth.example.test",
-        cyberfs_client_id="cyberfs",
-        cyberfs_client_secret="integration-client-value",
-        master_key=TEST_MASTER_KEY,
-        _env_file=None,  # type: ignore[call-arg]
-    )
+def build_settings(**overrides: object) -> Settings:
+    """Construct settings through the constructor so validation runs.
+
+    `model_copy(update=...)` skips validation, which silently leaves
+    `SecretStr` fields as plain strings.
+    """
+    base: dict[str, object] = {
+        "environment": Environment.TEST,
+        "database_url": database_url(),
+        "redis_url": "redis://localhost:6380/0",
+        "minio_endpoint": "localhost:9000",
+        "minio_access_key": "key",
+        "minio_secret_key": "integration-minio-value",
+        "minio_bucket": "cyberfs-content",
+        "minio_secure": False,
+        "cyberdyne_auth_base_url": "https://auth.example.test",
+        "cyberfs_client_id": "cyberfs",
+        "cyberfs_client_secret": "integration-client-value",
+        "master_key": TEST_MASTER_KEY,
+        "_env_file": None,
+    }
+    return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
 
 #: Remembers a failed connection so a run without Docker skips instantly

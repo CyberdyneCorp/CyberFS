@@ -37,6 +37,7 @@ def make_settings(**overrides: object) -> Settings:
         "minio_access_key": "key",
         "minio_secret_key": "unit-test-minio-value",
         "minio_bucket": "cyberfs-content",
+        "minio_secure": False,
         "cyberdyne_auth_base_url": "https://auth.example.test",
         "cyberfs_client_id": "cyberfs",
         "cyberfs_client_secret": "unit-test-client-value",

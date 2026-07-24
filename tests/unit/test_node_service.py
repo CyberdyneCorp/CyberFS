@@ -676,7 +676,7 @@ class StubDuplicator:
         self.size = size
         self.calls: list[tuple[uuid.UUID, uuid.UUID]] = []
 
-    async def duplicate(self, source: Node, target: Node) -> int:
+    async def duplicate(self, uow: object, source: Node, target: Node, now: datetime) -> int:
         self.calls.append((source.id, target.id))
         return self.size
 
