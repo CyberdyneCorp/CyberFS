@@ -153,14 +153,14 @@
 
 ## 12. Deployment
 
-- [ ] 12.1 Write the multi-stage non-root `Dockerfile` for the API and `admin/Dockerfile` for the dashboard, pinned to explicit base versions and excluding tests and dev dependencies
-- [ ] 12.2 Write `docker-compose.yml` for local development with Postgres, Redis, and MinIO, plus `just dev` bringing the whole stack to a serving state in one command and `just reset` wiping it
-- [ ] 12.3 Implement automatic bucket provisioning at startup with private access and versioning enabled
-- [ ] 12.4 Write `Dockerfile.coolify`, `compose.coolify.yaml`, and `coolify.yaml` defining API, dashboard, Postgres, Redis, and MinIO with health checks and named volumes, keeping MinIO unpublished
-- [ ] 12.5 Verify the dashboard configuration carries no Postgres, Redis, or MinIO credentials
-- [ ] 12.6 Verify multi-replica operation: statelessness, migration lock under concurrent start, and correct behaviour of any replica for any request
-- [ ] 12.7 Document required Coolify secrets (`MASTER_KEY`, `CYBERFS_CLIENT_SECRET`, storage credentials) and confirm none are committed
-- [ ] 12.8 Deploy to staging and run a full restore drill against it
+- [x] 12.1 Write the multi-stage non-root `Dockerfile` for the API and `admin/Dockerfile` for the dashboard, pinned to explicit base versions and excluding tests and dev dependencies
+- [x] 12.2 Write `docker-compose.yml` for local development with Postgres, Redis, and MinIO, plus `just dev` bringing the whole stack to a serving state in one command and `just reset` wiping it
+- [x] 12.3 Implement automatic bucket provisioning at startup with private access and versioning enabled
+- [x] 12.4 Write `Dockerfile.coolify`, `compose.coolify.yaml`, and `coolify.yaml` defining API, dashboard, Postgres, Redis, and MinIO with health checks and named volumes, keeping MinIO unpublished
+- [x] 12.5 Verify the dashboard configuration carries no Postgres, Redis, or MinIO credentials
+- [x] 12.6 Verify multi-replica operation: statelessness, migration lock under concurrent start, and correct behaviour of any replica for any request
+- [x] 12.7 Document required Coolify secrets (`MASTER_KEY`, `CYBERFS_CLIENT_SECRET`, storage credentials) and confirm none are committed
+- [ ] 12.8 Deploy to staging and run a full restore drill against it <!-- Requires live Coolify + operator; runbook at docs/deploy-staging.md -->
 
 ## 13. Documentation and close-out
 

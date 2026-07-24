@@ -1,0 +1,66 @@
+# CyberFS -- Coolify project descriptor.
+#
+# Mirrors the conventions of sibling Cyberdyne systems: the running stack is
+# defined in compose.coolify.yaml, and this file documents the environment
+# variables Coolify must supply -- distinguishing plain configuration from
+# SECRETS that must be created as Coolify secrets and are NEVER committed.
+#
+# Deploy: point a Coolify "Docker Compose" resource at compose.coolify.yaml,
+# set the variables below, and deploy. No manual steps beyond setting them
+# (deployment/spec.md: "Deploy from a clean environment"). Full runbook and the
+# restore drill: docs/deploy-staging.md.
+
+compose: compose.coolify.yaml
+
+# ---------------------------------------------------------------------------
+# SECRETS -- create as Coolify secrets. Never commit real values. .env / *.secret
+# / .local-keys are gitignored; only .env.example (placeholders) is tracked.
+# ---------------------------------------------------------------------------
+secrets:
+  # 256-bit content master key, base64. Generate: openssl rand -base64 32
+  # Production refuses to start with the dev placeholder. Held out of band and
+  # backed up separately -- it is never written into any backup (see
+  # docs/restore-runbook.md). Losing it means losing all encrypted content.
+  - MASTER_KEY
+  # OAuth client secret issued by CyberdyneAuth for CYBERFS_CLIENT_ID.
+  - CYBERFS_CLIENT_SECRET
+  # Postgres superuser password. Also embedded in DATABASE_URL if you set that
+  # explicitly instead of relying on the composed default.
+  - POSTGRES_PASSWORD
+  # MinIO root credentials. The API reads them as MINIO_ACCESS_KEY /
+  # MINIO_SECRET_KEY; MinIO itself reads MINIO_ROOT_USER / MINIO_ROOT_PASSWORD.
+  - MINIO_ROOT_USER
+  - MINIO_ROOT_PASSWORD
+  # Off-site backup target credentials -- required only when BACKUP_ENABLED=true.
+  # The target must differ from the primary MinIO endpoint+bucket (enforced at
+  # startup).
+  - BACKUP_S3_ACCESS_KEY
+  - BACKUP_S3_SECRET_KEY
+
+# ---------------------------------------------------------------------------
+# CONFIGURATION -- non-secret. Safe to set as plain Coolify environment vars.
+# ---------------------------------------------------------------------------
+environment:
+  # Identity / auth
+  - CYBERDYNE_AUTH_BASE_URL # e.g. https://auth.backend.coolify.cyberdynecorp.ai
+  - CYBERFS_CLIENT_ID # default: cyberfs
+  # Storage (non-secret parts)
+  - MINIO_BUCKET # default: cyberfs-content
+  # Dashboard -- PUBLIC_* only; the dashboard holds NO storage/DB credentials.
+  - PUBLIC_CYBERFS_API_URL # public URL of the API (Coolify ingress)
+  - PUBLIC_CYBERDYNE_AUTH_URL # public URL of CyberdyneAuth
+  - PUBLIC_OAUTH_PROVIDER # default: google
+  # Optional overrides
+  - LOG_LEVEL # default: INFO
+  - DATABASE_URL # optional; defaults to the internal postgres service
+  - REDIS_URL # optional; defaults to the internal redis service
+  # Backups (optional)
+  - BACKUP_ENABLED # default: false
+  - BACKUP_S3_ENDPOINT
+  - BACKUP_S3_BUCKET
+
+# Notes:
+#   * ENVIRONMENT is pinned to `production` in compose.coolify.yaml.
+#   * MinIO is internal-only: no host ports are published (see compose file).
+#   * The API is stateless and scales to N replicas (deploy.replicas); the boot
+#     migration serializes under a Postgres advisory lock.

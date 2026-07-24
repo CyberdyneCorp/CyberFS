@@ -15,8 +15,9 @@ from collections.abc import AsyncIterator
 from typing import BinaryIO, cast
 
 from minio import Minio
-from minio.commonconfig import CopySource
+from minio.commonconfig import ENABLED, CopySource
 from minio.error import S3Error
+from minio.versioningconfig import VersioningConfig
 
 from cyberfs.domain.errors import DependencyUnavailableError, NotFoundError
 from cyberfs.domain.ports.storage import StoredObject
@@ -94,12 +95,23 @@ class MinioObjectStore:
         return self._bucket
 
     async def ensure_bucket(self) -> None:
-        """Create the bucket if absent. Private by default; versioning on."""
+        """Create the bucket if absent, with private access and versioning on.
+
+        MinIO buckets are private by default (no anonymous policy). Versioning
+        is enabled explicitly -- `deployment/spec.md` requires it, and it lets a
+        deleted or overwritten object be recovered. `set_bucket_versioning` is
+        idempotent, so re-running against an existing bucket is a safe no-op.
+        """
         try:
             exists = await asyncio.to_thread(self._client.bucket_exists, self._bucket)
             if not exists:
                 await asyncio.to_thread(self._client.make_bucket, self._bucket)
                 logger.info("bucket_created", bucket=self._bucket)
+            await asyncio.to_thread(
+                self._client.set_bucket_versioning,
+                self._bucket,
+                VersioningConfig(ENABLED),
+            )
         except S3Error as exc:
             raise DependencyUnavailableError("object store is unavailable") from exc
 

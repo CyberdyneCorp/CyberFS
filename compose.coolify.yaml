@@ -1,0 +1,161 @@
+# CyberFS production stack for Coolify.
+#
+# Defines all five components in one file: API, dashboard, Postgres, Redis, and
+# MinIO, each with a health check and named volumes for the data stores.
+#
+# Security posture (deployment/spec.md):
+#   * MinIO is NEVER published to the internet -- it has no `ports:` mapping and
+#     is reachable only over the internal compose network by the API. The API is
+#     the only component that talks to Postgres, Redis, and MinIO.
+#   * The dashboard carries ONLY PUBLIC_* URLs -- no storage/DB credentials. It
+#     reaches data exclusively through the API.
+#   * Secrets (MASTER_KEY, CYBERFS_CLIENT_SECRET, POSTGRES_PASSWORD, MinIO
+#     credentials, backup credentials) are supplied as Coolify secrets via ${...}
+#     interpolation and are never committed. See coolify.yaml and
+#     docs/deploy-staging.md for the full secret list.
+#
+# Scaling (deployment/spec.md, "API is stateless"): the API holds no node-local
+# state and has no host port mapping, so it scales to N replicas without a
+# host-port collision. Coolify's proxy fronts ingress. Migrations serialize
+# under a Postgres advisory lock in the entrypoint, so concurrent replica boots
+# apply exactly once. Raise `deploy.replicas` safely.
+name: cyberfs
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      METRICS_ENABLED: "true"
+      # Internal service DNS names -- never host ports.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cyberfs:${POSTGRES_PASSWORD}@postgres:5432/cyberfs}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-cyberfs-content}
+      MINIO_SECURE: "false" # internal network; TLS terminates at Coolify's proxy
+      CYBERDYNE_AUTH_BASE_URL: ${CYBERDYNE_AUTH_BASE_URL}
+      CYBERFS_CLIENT_ID: ${CYBERFS_CLIENT_ID:-cyberfs}
+      CYBERFS_CLIENT_SECRET: ${CYBERFS_CLIENT_SECRET}
+      MASTER_KEY: ${MASTER_KEY}
+      # Optional off-site backups. Leave BACKUP_ENABLED=false to disable.
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-false}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}
+      BACKUP_S3_SECRET_KEY: ${BACKUP_S3_SECRET_KEY:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # No host port mapping -- Coolify's proxy handles ingress, so replicas do
+    # not collide on a host port.
+    expose:
+      - "8000"
+    deploy:
+      # Safe to raise: stateless API, migrations serialize under the advisory
+      # lock at boot.
+      replicas: 1
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready').status==200 else 1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  dashboard:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # ONLY PUBLIC_* URLs (+ server host/port). No DB/Redis/MinIO credentials --
+    # the dashboard reaches everything through the API.
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      PUBLIC_CYBERFS_API_URL: ${PUBLIC_CYBERFS_API_URL}
+      PUBLIC_CYBERDYNE_AUTH_URL: ${PUBLIC_CYBERDYNE_AUTH_URL}
+      PUBLIC_OAUTH_PROVIDER: ${PUBLIC_OAUTH_PROVIDER:-google}
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    image: postgres:17.2-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cyberfs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: cyberfs
+    # No host port -- internal network only.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberfs -d cyberfs"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-bookworm
+    restart: unless-stopped
+    # No host port -- internal network only.
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    # CRITICAL: no `ports:` mapping at all. Neither the S3 port (9000) nor the
+    # console (9001) is published. MinIO is reachable only from the API over the
+    # internal network (deployment/spec.md: "MinIO is not publicly exposed").
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata: # persists across redeploys (spec: volumes survive redeploy)
+  redisdata:
+  miniodata: # persists across redeploys
