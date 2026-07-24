@@ -12,19 +12,18 @@
 
 ## 2. Authentication (CyberdyneAuth resource server)
 
-- [ ] 2.1 Provision the CyberFS OAuth2 client at CyberdyneAuth (external prerequisite) and record `CYBERFS_CLIENT_ID`/`CYBERFS_CLIENT_SECRET` handling in the deployment docs
-- [ ] 2.2 Define the `IdentityProvider` port in `domain/ports` and the `Principal` value object (subject, is_admin, org, orgs, is_service)
-- [ ] 2.3 Implement the OIDC discovery client: fetch and cache the discovery document with `OIDC_DISCOVERY_TTL_SECONDS`; never hard-code issuer, JWKS URI, or algorithm
-- [ ] 2.4 Implement JWKS fetching and caching with `kid`-miss refresh bounded by `JWKS_REFRESH_COOLDOWN_SECONDS`, and stale-but-usable behaviour up to `JWKS_STALE_MAX_SECONDS`
-- [ ] 2.5 Implement token verification: signature against discovered keys, `iss` equal to discovered issuer, `exp` with 60s skew, rejection of `alg: none` and undiscovered algorithms
-- [ ] 2.6 Implement the RFC 7662 introspection client with a client-credentials service token cached until 60s before expiry
-- [ ] 2.7 Implement the auth dependency with two modes — claim-based for ordinary reads, introspection-backed for admin actions, grants, revocations, and ownership transfer — failing closed with `503` when introspection is unreachable
-- [ ] 2.8 Implement first-touch user provisioning: create the local user record, root folder, KEK, and default quota on first authenticated request; refresh `org`/`orgs`/`is_admin` from claims; treat a missing `orgs` claim as no org access
-- [ ] 2.9 Implement `AUTH_DEV_MODE` stub principal for local development, with startup failing if it is enabled in production
-- [ ] 2.10 Implement per-IP rate limiting of auth failures (`RATELIMIT_AUTH_FAILURES_PER_MIN`) returning `429`
-- [ ] 2.11 Implement auth audit records for every `401`/`403` capturing subject, target, reason code, and source IP, with no token values
-- [ ] 2.12 Unit tests for every scenario in `authentication/spec.md` against a faked auth server
-- [ ] 2.13 Integration test against a live CyberdyneAuth (or a conformant stub) covering discovery, JWKS rotation, introspection-driven denial of a demoted admin, and cold-cache `503`
+- [ ] 2.1 **BLOCKED (external)** Provision the CyberFS OAuth2 client at CyberdyneAuth. Needs an operator with CyberdyneAuth admin access; run its `provision-oauth-client` skill. The documentation half is done in `docs/auth-integration.md`. Until this lands, token verification works (public JWKS) but every introspection-backed operation fails closed with `503`.
+- [x] 2.2 Define the `IdentityProvider` port in `domain/ports` and the `Principal` value object (subject, is_admin, org, orgs, is_service)
+- [x] 2.3 Implement the OIDC discovery client: fetch and cache the discovery document with `OIDC_DISCOVERY_TTL_SECONDS`; never hard-code issuer, JWKS URI, or algorithm
+- [x] 2.4 Implement JWKS fetching and caching with `kid`-miss refresh bounded by `JWKS_REFRESH_COOLDOWN_SECONDS`, and stale-but-usable behaviour up to `JWKS_STALE_MAX_SECONDS`
+- [x] 2.5 Implement token verification: signature against discovered keys, `iss` equal to discovered issuer, `exp` with 60s skew, rejection of `alg: none` and undiscovered algorithms
+- [x] 2.6 Implement the RFC 7662 introspection client with a client-credentials service token cached until 60s before expiry
+- [x] 2.7 Implement the auth dependency with two modes — claim-based for ordinary reads, introspection-backed for admin actions, grants, revocations, and ownership transfer — failing closed with `503` when introspection is unreachable
+- [x] 2.9 Implement `AUTH_DEV_MODE` stub principal for local development, with startup failing if it is enabled in production
+- [x] 2.10 Implement per-IP rate limiting of auth failures (`RATELIMIT_AUTH_FAILURES_PER_MIN`) returning `429`
+- [x] 2.11 Implement auth audit records for every `401`/`403` capturing subject, target, reason code, and source IP, with no token values
+- [x] 2.12 Unit tests for every scenario in `authentication/spec.md` against a faked auth server
+- [x] 2.13 Integration test against a live CyberdyneAuth (or a conformant stub) covering discovery, JWKS rotation, introspection-driven denial of a demoted admin, and cold-cache `503`
 
 ## 3. Data model and migrations
 
@@ -34,6 +33,7 @@
 - [ ] 3.4 Create the initial Alembic migration and wire migrations-on-boot with an advisory lock so concurrent replicas serialize, and non-zero exit on failure
 - [ ] 3.5 Implement the per-request Unit of Work with transaction boundaries owned by the application layer
 - [ ] 3.6 Implement the recursive-CTE ancestor/descendant queries used by permission resolution and subtree operations, bounded by `MAX_TREE_DEPTH`
+- [ ] 3.7 Implement first-touch user provisioning: create the local user record, root folder, KEK, and default quota on first authenticated request; refresh `org`/`orgs`/`is_admin` from claims; treat a missing `orgs` claim as no org access (moved from 2.8 — depends on the `User` entity and the key provider)
 
 ## 4. File storage — tree and CRUD
 

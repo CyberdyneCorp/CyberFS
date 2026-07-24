@@ -49,6 +49,21 @@ def status_for(error: err.CyberFSError) -> HTTPStatus:
     return HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+#: Statuses for which a caller can usefully be told when to come back.
+_RETRYABLE = frozenset({HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE})
+
+DEFAULT_RETRY_AFTER_SECONDS = 30
+
+
+def _retry_after(error: err.CyberFSError, status: HTTPStatus) -> str | None:
+    if status not in _RETRYABLE:
+        return None
+    seconds = error.context.get("retry_after_seconds")
+    if isinstance(seconds, int) and seconds > 0:
+        return str(seconds)
+    return str(DEFAULT_RETRY_AFTER_SECONDS)
+
+
 def problem_response(error: err.CyberFSError, status: HTTPStatus) -> JSONResponse:
     body: dict[str, object] = {
         "type": f"https://cyberfs.cyberdynecorp.ai/errors/{error.code}",
@@ -59,7 +74,12 @@ def problem_response(error: err.CyberFSError, status: HTTPStatus) -> JSONRespons
     }
     if (request_id := current_request_id()) is not None:
         body["request_id"] = request_id
-    return JSONResponse(status_code=int(status), content=body, media_type=PROBLEM_JSON)
+    headers = {}
+    if (retry_after := _retry_after(error, status)) is not None:
+        headers["Retry-After"] = retry_after
+    return JSONResponse(
+        status_code=int(status), content=body, media_type=PROBLEM_JSON, headers=headers
+    )
 
 
 async def handle_domain_error(_request: Request, exc: Exception) -> JSONResponse:

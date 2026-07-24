@@ -15,6 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from cyberfs import __version__
 from cyberfs.adapters.inbound.api import health, metrics
+from cyberfs.adapters.inbound.api.composition import (
+    AuthHealthProbe,
+    build_authentication,
+    build_http_client,
+    build_identity,
+)
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
 from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
 from cyberfs.application.health import HealthService
@@ -34,8 +40,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         encryption_default_on=settings.encryption_default_on,
         auth_dev_mode=settings.auth_dev_mode,
     )
-    yield
-    logger.info("stopping", version=__version__)
+    try:
+        yield
+    finally:
+        await app.state.http.aclose()
+        logger.info("stopping", version=__version__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -55,6 +64,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.settings = settings
     app.state.health = HealthService()
+
+    app.state.http = build_http_client(settings)
+    verifier, introspector, discovery = build_identity(settings, app.state.http)
+    app.state.authentication = build_authentication(settings, verifier, introspector)
+    app.state.health.register(AuthHealthProbe(discovery))
 
     # Outermost first: correlation wraps metrics so failed requests are still
     # attributable to a request id.
