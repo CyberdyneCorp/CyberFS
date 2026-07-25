@@ -20,6 +20,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from cyberfs.domain.auth.policy import utcnow
+from cyberfs.domain.errors import InvalidArgumentError
 from cyberfs.domain.ports.crypto import KeyProvider
 from cyberfs.domain.s3 import presigned, sigv4
 from cyberfs.domain.s3.access_key import S3AccessKey
@@ -70,6 +71,8 @@ class S3PresignService:
         -- revoking the key stops it working on the very next request, since the
         verifier reloads the key and refuses a revoked one.
         """
+        if expires <= 0 or expires > presigned.MAX_PRESIGN_EXPIRES:
+            raise InvalidArgumentError("presigned URL validity exceeds the maximum")
         moment = now or utcnow()
         secret = self._keys.unseal_secret(
             key.sealed_secret, master_key_id=key.secret_master_key_id

@@ -38,7 +38,10 @@ from cyberfs.adapters.inbound.api.composition import (
     disabled_backup_probe,
 )
 from cyberfs.adapters.inbound.api.errors import register_error_handlers
-from cyberfs.adapters.inbound.api.middleware import RequestContextMiddleware
+from cyberfs.adapters.inbound.api.middleware import (
+    RequestContextMiddleware,
+    SecurityHeadersMiddleware,
+)
 from cyberfs.adapters.inbound.api.routers import admin as admin_router
 from cyberfs.adapters.inbound.api.routers import content as content_router
 from cyberfs.adapters.inbound.api.routers import me as me_router
@@ -238,6 +241,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Outermost first: correlation wraps metrics so failed requests are still
     # attributable to a request id.
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     if settings.metrics_enabled:
         app.add_middleware(metrics.MetricsMiddleware)
     if settings.cors_allowed_origins:

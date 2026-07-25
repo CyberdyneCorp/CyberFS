@@ -77,6 +77,27 @@ def test_request_id_is_generated_when_absent(client: TestClient) -> None:
     assert client.get("/health/live").headers[REQUEST_ID_HEADER]
 
 
+# --- security headers ------------------------------------------------------
+
+
+def test_ordinary_response_carries_nosniff(client: TestClient) -> None:
+    assert client.get("/health/live").headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_streaming_download_carries_nosniff(app: FastAPI, client: TestClient) -> None:
+    from fastapi.responses import StreamingResponse
+
+    @app.get("/dl")
+    async def dl() -> StreamingResponse:
+        return StreamingResponse(
+            iter([b"hi"]),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment"},
+        )
+
+    assert client.get("/dl").headers["X-Content-Type-Options"] == "nosniff"
+
+
 # --- problem details -------------------------------------------------------
 
 

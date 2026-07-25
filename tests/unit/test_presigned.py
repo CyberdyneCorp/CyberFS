@@ -10,9 +10,18 @@ request reproduces exactly.
 
 from __future__ import annotations
 
+import uuid
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
+from cyberfs.application.s3_presign import S3PresignService
+from cyberfs.domain.errors import InvalidArgumentError
 from cyberfs.domain.s3 import presigned, sigv4
+from cyberfs.domain.s3.access_key import S3AccessKey
+
+from .fakes import FakeKeyProvider
 
 ENDPOINT = "https://s3.cyberfs.example"
 BASE_PATH = "/s3"
@@ -175,6 +184,65 @@ def test_parse_rejects_a_non_numeric_expiry() -> None:
 def test_parse_rejects_a_non_positive_expiry() -> None:
     query = urlsplit(_generate()).query.replace("X-Amz-Expires=900", "X-Amz-Expires=0")
     assert presigned.parse_presigned_query(query) is None
+
+
+# --- expiry cap at seven days (AWS maximum) ---------------------------------
+
+
+def test_parse_expires_rejects_over_the_cap() -> None:
+    assert presigned._parse_expires(str(presigned.MAX_PRESIGN_EXPIRES + 1)) is None
+
+
+def test_parse_expires_accepts_exactly_the_cap() -> None:
+    assert (
+        presigned._parse_expires(str(presigned.MAX_PRESIGN_EXPIRES))
+        == presigned.MAX_PRESIGN_EXPIRES
+    )
+
+
+def test_parse_expires_accepts_a_normal_value() -> None:
+    assert presigned._parse_expires("900") == 900
+
+
+def test_parse_rejects_an_over_cap_expiry() -> None:
+    over = presigned.MAX_PRESIGN_EXPIRES + 1
+    query = urlsplit(_generate()).query.replace("X-Amz-Expires=900", f"X-Amz-Expires={over}")
+    assert presigned.parse_presigned_query(query) is None
+
+
+def _presign_service() -> S3PresignService:
+    return S3PresignService(
+        FakeKeyProvider(), endpoint=ENDPOINT, base_path=BASE_PATH, region=REGION
+    )
+
+
+def _access_key() -> S3AccessKey:
+    keys = FakeKeyProvider()
+    return S3AccessKey(
+        key_id=ACCESS_KEY_ID,
+        sealed_secret=keys.seal_secret(SECRET.encode()),
+        secret_master_key_id=keys.master_key_id,
+        label="",
+        owner_id=uuid.uuid4(),
+        owner_subject="user-1",
+        created_at=datetime(2026, 7, 24, tzinfo=UTC),
+    )
+
+
+def test_generation_refuses_an_over_cap_expires() -> None:
+    with pytest.raises(InvalidArgumentError):
+        _presign_service().presign(
+            _access_key(),
+            "GET",
+            BUCKET,
+            KEY,
+            expires=presigned.MAX_PRESIGN_EXPIRES + 1,
+        )
+
+
+def test_generation_accepts_a_normal_expires() -> None:
+    url = _presign_service().presign(_access_key(), "GET", BUCKET, KEY, expires=900)
+    assert url.startswith(ENDPOINT)
 
 
 def test_parse_rejects_a_malformed_credential_scope() -> None:

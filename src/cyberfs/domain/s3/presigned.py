@@ -42,6 +42,10 @@ _SCOPE_PARTS = 5
 #: addresses and cannot be replayed against a different endpoint.
 _DEFAULT_SIGNED_HEADERS = ("host",)
 
+#: AWS caps presigned-URL validity at seven days; CyberFS refuses anything
+#: beyond it, both at mint and at verification, so an over-cap URL never works.
+MAX_PRESIGN_EXPIRES = 604_800
+
 
 @dataclass(frozen=True, slots=True)
 class PresignedQuery:
@@ -115,7 +119,9 @@ def _parse_expires(raw: str) -> int | None:
         expires = int(raw)
     except ValueError:
         return None
-    return expires if expires > 0 else None
+    if expires <= 0 or expires > MAX_PRESIGN_EXPIRES:
+        return None
+    return expires
 
 
 def canonical_query_without_signature(query: str) -> str:

@@ -39,7 +39,7 @@ from cyberfs.domain.sharing import Role
 
 router = APIRouter(prefix="/api/v1", tags=["sharing"])
 
-Passphrase = Annotated[str | None, Header(alias="X-Link-Passphrase")]
+Passphrase = Annotated[str | None, Header(alias="X-Link-Passphrase", max_length=255)]
 RangeHeader = Annotated[str | None, Header(alias="Range")]
 
 
