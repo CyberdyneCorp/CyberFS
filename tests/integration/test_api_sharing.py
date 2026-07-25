@@ -86,7 +86,7 @@ def grant(client: TestClient, node: str, subject: str, role: str) -> None:
 
 def test_a_grant_lets_the_recipient_read(client: TestClient) -> None:
     root_id(client, BOB)  # provision Bob
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
 
     grant(client, folder, "bob", "viewer")
 
@@ -97,7 +97,7 @@ def test_a_grant_lets_the_recipient_read(client: TestClient) -> None:
 
 def test_a_viewer_cannot_write(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     grant(client, folder, "bob", "viewer")
 
     response = client.post(f"/api/v1/nodes/{folder}/folders", json={"name": "mine"}, headers=BOB)
@@ -106,7 +106,7 @@ def test_a_viewer_cannot_write(client: TestClient) -> None:
 
 def test_an_editor_can_write(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     grant(client, folder, "bob", "editor")
 
     response = client.post(f"/api/v1/nodes/{folder}/folders", json={"name": "bobs"}, headers=BOB)
@@ -115,7 +115,7 @@ def test_an_editor_can_write(client: TestClient) -> None:
 
 def test_an_editor_cannot_re_share(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     grant(client, folder, "bob", "editor")
 
     response = client.put(
@@ -128,7 +128,7 @@ def test_an_editor_cannot_re_share(client: TestClient) -> None:
 
 def test_a_grant_reaches_descendant_content(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     node = upload(client, ALICE, folder, "inside.bin")
     grant(client, folder, "bob", "viewer")
 
@@ -138,7 +138,7 @@ def test_a_grant_reaches_descendant_content(client: TestClient) -> None:
 
 
 def test_sharing_with_yourself_is_a_conflict(client: TestClient) -> None:
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     response = client.put(
         f"/api/v1/nodes/{folder}/grants",
         json={"recipient": "alice", "role": "viewer"},
@@ -153,7 +153,7 @@ def test_sharing_with_yourself_is_a_conflict(client: TestClient) -> None:
 def test_revocation_denies_the_very_next_request(client: TestClient) -> None:
     """No TTL, no eventual consistency -- the next request is already denied."""
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     node = upload(client, ALICE, folder, "secret.bin")
     grant(client, folder, "bob", "viewer")
 
@@ -168,7 +168,7 @@ def test_revocation_denies_the_very_next_request(client: TestClient) -> None:
 
 def test_a_recipient_can_drop_their_own_access(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     grant(client, folder, "bob", "viewer")
 
     response = client.delete(f"/api/v1/nodes/{folder}/grants/bob", headers=BOB)
@@ -178,7 +178,7 @@ def test_a_recipient_can_drop_their_own_access(client: TestClient) -> None:
 
 def test_shared_with_me_lists_the_share(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     grant(client, folder, "bob", "viewer")
 
     listing = client.get("/api/v1/shared-with-me", headers=BOB).json()

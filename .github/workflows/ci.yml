@@ -77,6 +77,10 @@ jobs:
     env:
       ENVIRONMENT: test
       DATABASE_URL: postgresql+asyncpg://cyberfs:cyberfs@localhost:5432/cyberfs
+      # The integration fixtures resolve their database from CYBERFS_TEST_DATABASE_URL
+      # (defaulting to the local :5434 dev container). Without this, every DB-backed
+      # integration test silently SKIPS in CI — point it at the service container.
+      CYBERFS_TEST_DATABASE_URL: postgresql+asyncpg://cyberfs:cyberfs@localhost:5432/cyberfs
       REDIS_URL: redis://localhost:6379/0
       MINIO_ENDPOINT: localhost:9000
       MINIO_ACCESS_KEY: cyberfs

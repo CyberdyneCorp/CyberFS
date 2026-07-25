@@ -27,6 +27,14 @@ def database_url() -> str:
     return os.environ.get("CYBERFS_TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
 
 
+def _redis_url() -> str:
+    return os.environ.get("REDIS_URL", "redis://localhost:6380/0")
+
+
+def _minio_endpoint() -> str:
+    return os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+
+
 def build_settings(**overrides: object) -> Settings:
     """Construct settings through the constructor so validation runs.
 
@@ -36,8 +44,8 @@ def build_settings(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "environment": Environment.TEST,
         "database_url": database_url(),
-        "redis_url": "redis://localhost:6380/0",
-        "minio_endpoint": "localhost:9000",
+        "redis_url": _redis_url(),
+        "minio_endpoint": _minio_endpoint(),
         "minio_access_key": "key",
         "minio_secret_key": "integration-minio-value",
         "minio_bucket": "cyberfs-content",

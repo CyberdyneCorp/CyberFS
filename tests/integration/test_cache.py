@@ -202,7 +202,7 @@ def test_revocation_still_beats_the_cache(client: TestClient) -> None:
     cached, and the revocation still has to deny him on the next request.
     """
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     client.put(
         f"/api/v1/nodes/{folder}/grants",
         json={"recipient": "bob", "role": "viewer"},
@@ -218,7 +218,7 @@ def test_revocation_still_beats_the_cache(client: TestClient) -> None:
 
 def test_a_narrowed_grant_takes_effect_at_once(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "docs")
     client.put(
         f"/api/v1/nodes/{folder}/grants",
         json={"recipient": "bob", "role": "editor"},
@@ -264,7 +264,7 @@ def test_a_rename_is_visible_immediately(client: TestClient) -> None:
 def test_a_move_updates_inherited_access_immediately(client: TestClient) -> None:
     root_id(client, BOB)
     alice_root = root_id(client, ALICE)
-    shared = make_folder(client, ALICE, alice_root, "shared")
+    shared = make_folder(client, ALICE, alice_root, "docs")
     private = make_folder(client, ALICE, alice_root, "private")
     item = make_folder(client, ALICE, shared, "item")
     client.put(
