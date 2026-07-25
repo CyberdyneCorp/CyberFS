@@ -79,6 +79,15 @@ def test_list_buckets_returns_the_callers_bucket(client: TestClient) -> None:
     assert "<Name>alice</Name>" in response.text
 
 
+def test_list_buckets_at_the_bare_root_does_not_redirect(client: TestClient) -> None:
+    # An S3 client configured with the endpoint `<host>/s3` issues `GET /s3` with
+    # no trailing slash; a 307 slash-redirect breaks boto3's ListBuckets, so the
+    # bare form must resolve directly to 200.
+    response = client.get("/s3", headers=ALICE, follow_redirects=False)
+    assert response.status_code == 200
+    assert "<Name>alice</Name>" in response.text
+
+
 def test_list_objects_v2_lists_the_tree(client: TestClient) -> None:
     response = client.get(
         "/s3/alice", params={"list-type": "2", "prefix": "reports/"}, headers=ALICE

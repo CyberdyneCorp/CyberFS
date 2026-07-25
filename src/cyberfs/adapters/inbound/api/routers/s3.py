@@ -94,6 +94,11 @@ def create_s3_router(base_path: str) -> APIRouter:
     """
     router = APIRouter(prefix=base_path, tags=["s3"])
 
+    # Serve ListBuckets at both `/s3` and `/s3/`: an S3 client configured with the
+    # endpoint `<host>/s3` issues `GET /s3` with no trailing slash, and FastAPI's
+    # default slash redirect (307 -> `/s3/`) is mishandled by boto3's ListBuckets
+    # path, so the bare form must resolve directly.
+    @router.get("")
     @router.get("/")
     async def list_buckets(request: Request, uow: UnitOfWorkDep) -> Response:
         try:

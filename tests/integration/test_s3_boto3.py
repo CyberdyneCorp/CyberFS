@@ -16,7 +16,6 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 from cyberfs.infrastructure.settings import Environment
 
@@ -62,8 +61,13 @@ def _serve(app: object, port: int) -> Iterator[None]:
 
 
 @pytest.fixture
-def base_url(engine: AsyncEngine) -> Iterator[str]:
-    """A live CyberFS with the S3 surface enabled, or a skip when unreachable."""
+def base_url(session_factory: object) -> Iterator[str]:
+    """A live CyberFS with the S3 surface enabled, or a skip when unreachable.
+
+    Depends on ``session_factory`` (not just ``engine``) so the per-test TRUNCATE
+    runs first — the boto3 tests share one database, and without it a folder or
+    key from a previous test collides with this one.
+    """
     from minio import Minio
 
     try:
@@ -132,6 +136,7 @@ def test_boto3_lists_and_downloads_identically_to_rest(base_url: str) -> None:
         headers={**ALICE, "Content-Type": "text/plain"},
     )
     assert upload.status_code == 201, upload.text
+    file_id = upload.json()["id"]
 
     access_key, secret = _mint_key(base_url)
     client = _s3_client(base_url, access_key, secret)
@@ -144,7 +149,7 @@ def test_boto3_lists_and_downloads_identically_to_rest(base_url: str) -> None:
     assert "report.txt" in {item["Key"] for item in listing.get("Contents", [])}
 
     s3_bytes = client.get_object(Bucket="alice", Key="report.txt")["Body"].read()
-    rest_bytes = httpx.get(f"{base_url}/api/v1/nodes/{root}/content", headers=ALICE).content
+    rest_bytes = httpx.get(f"{base_url}/api/v1/nodes/{file_id}/content", headers=ALICE).content
     assert s3_bytes == rest_bytes == PAYLOAD
 
 
