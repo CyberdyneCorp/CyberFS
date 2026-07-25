@@ -1,0 +1,61 @@
+# Local development stack: Postgres, Redis, MinIO.
+#
+# The API itself is NOT run here -- `just dev` (db-up, db-wait, migrate,
+# serve-dev) runs uvicorn on the host against these containers, which gives
+# fast reload. `just reset` (docker compose down -v) wipes every volume.
+#
+# Service names are postgres/redis/minio to match the justfile recipes.
+name: cyberfs
+
+services:
+  postgres:
+    image: postgres:17.2-bookworm
+    environment:
+      POSTGRES_USER: cyberfs
+      POSTGRES_PASSWORD: cyberfs
+      POSTGRES_DB: cyberfs
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberfs -d cyberfs"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-bookworm
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      # Must match MINIO_ACCESS_KEY / MINIO_SECRET_KEY in .env.example so the
+      # host-run API can reach this store.
+      MINIO_ROOT_USER: cyberfs
+      MINIO_ROOT_PASSWORD: CHANGE_ME
+    ports:
+      - "9000:9000" # S3 API (local only)
+      - "9001:9001" # Web console (local only)
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

@@ -1,0 +1,48 @@
+# Keep the build context small and free of dev/test/secret material.
+# The API image ships only src/, alembic/, alembic.ini, pyproject.toml, uv.lock.
+
+.git
+.gitignore
+
+# Virtualenvs and caches
+.venv
+venv
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Tests and dev-only material (spec: image excludes tests/fixtures/dev deps)
+tests
+docs
+openspec
+
+# The dashboard has its own image (admin/Dockerfile); never in the API context
+admin
+
+# Secrets -- never copy into an image
+.env
+.env.*
+!.env.example
+*.secret
+.cyberfs-client.secret
+.local-keys
+
+# Editor / OS noise
+.idea
+.vscode
+.DS_Store
+*.swp
+
+# Deployment descriptors are not needed inside the image
+docker-compose.yml
+compose.coolify.yaml
+coolify.yaml
+Dockerfile
+Dockerfile.coolify
+.dockerignore

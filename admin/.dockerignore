@@ -1,0 +1,22 @@
+# The dashboard image builds from admin/ only. Exclude installed deps, build
+# output, and all test/dev material.
+
+.git
+node_modules
+.svelte-kit
+build
+test-results
+playwright-report
+tests
+e2e
+playwright.config.ts
+
+# Secrets / local env -- the image is configured at runtime via PUBLIC_* vars
+.env
+.env.*
+!.env.example
+
+.DS_Store
+*.swp
+Dockerfile
+.dockerignore
