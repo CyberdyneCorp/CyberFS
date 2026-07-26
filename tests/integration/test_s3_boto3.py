@@ -62,8 +62,14 @@ def _serve(app: object, port: int) -> Iterator[None]:
 
 
 @pytest.fixture
-def base_url(engine: AsyncEngine) -> Iterator[str]:
-    """A live CyberFS with the S3 surface enabled, or a skip when unreachable."""
+def base_url(engine: AsyncEngine, session_factory: object) -> Iterator[str]:
+    """A live CyberFS with the S3 surface enabled, or a skip when unreachable.
+
+    Takes `session_factory` for its truncation, the same as every other module
+    here. Without it rows survived between tests in this file while each test
+    got a fresh app and a fresh bucket, so a user provisioned by an earlier test
+    kept key material that no longer matched the objects around it.
+    """
     from minio import Minio
 
     try:
