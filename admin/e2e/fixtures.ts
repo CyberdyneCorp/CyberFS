@@ -162,7 +162,17 @@ const OPERATIONS = {
 
 export interface StubOptions {
   isAdmin?: boolean;
+  /** How CyberdyneAuth answers `POST /auth/login`. Defaults to a token pair. */
+  login?: { status: number; body: unknown };
+  /** How it answers `POST /auth/mfa/verify`. Defaults to a token pair. */
+  mfaVerify?: { status: number; body: unknown };
 }
+
+const TOKEN_PAIR = {
+  access_token: "test-access-token",
+  refresh_token: "test-refresh-token",
+  token_type: "bearer",
+};
 
 /** Intercepts CyberdyneAuth and the CyberFS admin API for one page. */
 export async function stubBackends(page: Page, options: StubOptions = {}): Promise<void> {
@@ -178,6 +188,12 @@ export async function stubBackends(page: Page, options: StubOptions = {}): Promi
 
     if (path === "/api/v1/users/me") {
       await json(route, { id: "admin-1", email: "admin@cyberdyne.io", is_admin: isAdmin });
+    } else if (path === "/api/v1/auth/login") {
+      const answer = options.login ?? { status: 200, body: TOKEN_PAIR };
+      await json(route, answer.body, answer.status);
+    } else if (path === "/api/v1/auth/mfa/verify") {
+      const answer = options.mfaVerify ?? { status: 200, body: TOKEN_PAIR };
+      await json(route, answer.body, answer.status);
     } else if (path === "/api/v1/admin/overview") {
       await json(route, OVERVIEW);
     } else if (path === "/api/v1/admin/users") {

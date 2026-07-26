@@ -70,6 +70,37 @@ export async function beginLogin(returnPath: string): Promise<void> {
   window.location.assign(url);
 }
 
+/**
+ * Signs in with credentials instead of the redirect flow.
+ *
+ * Converges on the same session as `beginLogin`: either the tokens are adopted
+ * here, or CyberdyneAuth wants a second factor and the caller collects a code
+ * and finishes through `completeMfaLogin`. The challenge token is handed back
+ * rather than stored, so it lives only as long as the prompt does.
+ */
+export async function beginPasswordLogin(
+  email: string,
+  password: string,
+  returnPath: string,
+): Promise<PasswordLoginResult> {
+  rememberReturnPath(returnPath);
+  const outcome = await wire().auth.login(email, password);
+  if (outcome.kind === "mfa") {
+    return { kind: "code-required", mfaToken: outcome.mfaToken };
+  }
+  adoptTokens(outcome.tokens.access_token, outcome.tokens.refresh_token);
+  return { kind: "signed-in" };
+}
+
+export type PasswordLoginResult =
+  { kind: "signed-in" } | { kind: "code-required"; mfaToken: string };
+
+/** Completes a second-factor challenge started by `beginPasswordLogin`. */
+export async function completeMfaLogin(mfaToken: string, code: string): Promise<void> {
+  const tokens = await wire().auth.verifyMfa(mfaToken, code);
+  adoptTokens(tokens.access_token, tokens.refresh_token);
+}
+
 export function adoptTokens(accessToken: string, refreshToken: string): void {
   setTokens(accessToken, refreshToken);
 }

@@ -57,6 +57,21 @@ test("the login page has no serious or critical violations", async ({ page }) =>
   await expectNoBlockingViolations(page);
 });
 
+test("the second-factor prompt has no serious or critical violations", async ({ page }) => {
+  // Like the revoke confirmation, this appears only on interaction, so a
+  // page-load-only sweep would never reach it.
+  await stubBackends(page, {
+    login: { status: 200, body: { mfa_required: true, mfa_token: "mfa-1" } },
+  });
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("admin@cyberdyne.io");
+  await page.getByLabel("Password").fill("correct-horse");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByLabel("Authentication code")).toBeVisible();
+
+  await expectNoBlockingViolations(page);
+});
+
 test("the access-denied page has no serious or critical violations", async ({ page }) => {
   await signIn(page);
   await stubBackends(page, { isAdmin: false });

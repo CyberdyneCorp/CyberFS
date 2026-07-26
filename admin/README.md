@@ -25,16 +25,43 @@ unit-tested headlessly against `tests/stub-api.ts` — no DOM, no server.
 
 ## Authentication
 
-The dashboard is on a **different origin** from CyberdyneAuth, so cookies are
-not available to it. It uses CyberdyneAuth's documented **fragment mode**
-(`docs/oauth-external-clients.md` in that repo): tokens come back in the URL
-fragment, are moved into `sessionStorage`, and the fragment is scrubbed from the
-address bar immediately.
+There are two ways in, and both end holding the same CyberdyneAuth token pair in
+`sessionStorage`. Everything after that point is identical.
+
+**OAuth (preferred).** The dashboard is on a **different origin** from
+CyberdyneAuth, so cookies are not available to it. It uses CyberdyneAuth's
+documented **fragment mode** (`docs/oauth-external-clients.md` in that repo):
+tokens come back in the URL fragment, are moved into `sessionStorage`, and the
+fragment is scrubbed from the address bar immediately.
+
+**Email and password.** `POST /api/v1/auth/login` on CyberdyneAuth, for
+operators without a usable Cyberdyne identity. That endpoint answers with
+_either_ a token pair _or_ `{mfa_required: true, mfa_token}`; on the latter the
+page prompts for a one-time code and finishes through
+`POST /api/v1/auth/mfa/verify`. The password and the code are held in component
+state for the length of the request and never written to storage, the URL, or a
+log.
+
+Prefer OAuth where you can. The redirect flow never exposes a password to this
+page, so cross-site scripting here could at worst steal a session token; with the
+password form, it could capture an administrator credential that is reusable
+across every Cyberdyne service. The hash-mode CSP (`script-src 'self'`, no inline
+scripts) in `svelte.config.js` is the primary defence and should not be relaxed.
+That is why the OAuth button is first and visually primary on the sign-in page.
+
+Sign-in failures deliberately do not reveal whether an account exists: an unknown
+address and a wrong password produce the same message, matching CyberdyneAuth,
+which answers `401` for both and runs a dummy password verify so the two cost the
+same. Rate limiting is CyberdyneAuth's (`RATELIMIT_LOGIN_PER_MIN`, per source IP,
+counted before authenticating) — the dashboard surfaces a `429` distinctly rather
+than reporting it as a bad password, and does not attempt its own throttle, which
+an attacker would bypass by calling the API directly.
 
 `is_admin` comes from `GET /api/v1/users/me` on CyberdyneAuth — the same flag
 the CyberFS API enforces on every admin request, so the UI and the server cannot
 disagree. A non-admin who signs in successfully lands on `/forbidden` rather
-than being bounced back to a login they have already completed.
+than being bounced back to a login they have already completed. This holds for
+both sign-in paths.
 
 ### CyberdyneAuth must allowlist this app
 

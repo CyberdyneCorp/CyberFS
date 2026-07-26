@@ -91,13 +91,25 @@ export function clear(): void {
 }
 
 export function rememberReturnPath(path: string): void {
+  // The sign-in pages are never a destination. The layout stores the real
+  // deep link before redirecting here, and both sign-in paths then ask to
+  // remember where they are -- which would clobber it and land the operator
+  // back on the login page after authenticating.
+  if (isSignInRoute(path)) return;
   store.setItem(RETURN_KEY, path);
 }
 
 export function takeReturnPath(): string {
   const saved = store.getItem(RETURN_KEY);
   store.removeItem(RETURN_KEY);
-  return safeReturnPath(saved);
+  // Guard the read too: a stored sign-in route would be a redirect loop.
+  return isSignInRoute(saved) ? "/" : safeReturnPath(saved);
+}
+
+function isSignInRoute(path: string | null): boolean {
+  if (!path) return false;
+  const bare = path.split("?")[0].replace(/\/+$/, "");
+  return bare === "/login" || bare === "/auth/callback";
 }
 
 // --- token source ----------------------------------------------------------
