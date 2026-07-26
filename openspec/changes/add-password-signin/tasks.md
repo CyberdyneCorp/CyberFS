@@ -40,4 +40,12 @@
 - [x] 5.2 Sign in against the deployed CyberdyneAuth with a real password account and confirm the dashboard admits an administrator
 - [x] 5.3 Confirm the OAuth button still works unchanged after the page is restructured
 - [x] 5.4 Update `admin/README.md` to describe both sign-in paths and state why OAuth is preferred
-- [ ] 5.5 Run `openspec validate add-password-signin` and archive the change once deployed
+- [x] 5.5 Run `openspec validate add-password-signin` (passes)
+- [ ] 5.6 Archive this change -- BLOCKED. `openspec/specs/` does not exist yet: no
+      change in this repo has ever been archived (`bootstrap-cyberfs` and
+      `add-s3-and-activity` are both still active, with 2 and 1 pending tasks).
+      Archiving needs a spec baseline, because this change's delta MODIFIES an
+      existing `admin-dashboard` requirement and `openspec archive` only permits
+      ADDED operations when creating a spec from scratch. Archive the two earlier
+      changes first, or run `openspec-baseline`/`opsx:sync` to establish
+      `openspec/specs/`, then archive this one -- it needs no edits of its own.
