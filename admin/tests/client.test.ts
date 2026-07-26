@@ -170,6 +170,14 @@ describe("error mapping", () => {
     const client = createClient(fetchImpl);
     await expect(client.get("/admin/users")).rejects.toBeInstanceOf(NetworkError);
   });
+
+  it("names CyberFS as the unreachable service", async () => {
+    const fetchImpl = stubFetch(async () => {
+      throw new TypeError("failed to fetch");
+    });
+    const client = createClient(fetchImpl);
+    await expect(client.get("/admin/users")).rejects.toMatchObject({ service: "CyberFS" });
+  });
 });
 
 describe("401 handling", () => {

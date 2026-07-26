@@ -47,13 +47,19 @@ export class RateLimitError extends ApiError {
   }
 }
 
-/** The request never reached the server. Distinct from any HTTP status. */
+/**
+ * The request never reached the server. Distinct from any HTTP status.
+ *
+ * Carries the dependency it failed against. The dashboard talks to two separate
+ * origins -- CyberFS and CyberdyneAuth -- so a message that names the wrong one
+ * sends an operator to check a service that was healthy all along.
+ */
 export class NetworkError extends Error {
   constructor(
-    message: string,
+    readonly service: string,
     readonly cause?: unknown,
   ) {
-    super(message);
+    super(`could not reach ${service}`);
   }
 }
 
@@ -132,7 +138,7 @@ export class ApiClient {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (cause) {
-      throw new NetworkError("could not reach CyberFS", cause);
+      throw new NetworkError("CyberFS", cause);
     }
   }
 

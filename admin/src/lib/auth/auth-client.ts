@@ -68,7 +68,7 @@ export class AuthClient {
         headers: { Accept: "application/json", ...init.headers },
       });
     } catch (cause) {
-      throw new NetworkError("could not reach CyberdyneAuth", cause);
+      throw new NetworkError("CyberdyneAuth", cause);
     }
 
     const text = await response.text();

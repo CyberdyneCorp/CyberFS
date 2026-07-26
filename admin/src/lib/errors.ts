@@ -13,7 +13,13 @@ import {
 
 export function describeError(err: unknown): string {
   if (err instanceof NetworkError) {
-    return "Could not reach CyberFS. Check that the API is running.";
+    // Name the service that actually failed. A browser reports a CORS or CSP
+    // rejection as an unreachable host, so a running service can still land
+    // here -- point at the allowlists rather than only at "is it up".
+    return (
+      `Could not reach ${err.service}. Check that it is running and that this ` +
+      `origin is allowed by its CORS policy.`
+    );
   }
   if (err instanceof UnauthorizedError) {
     return "Your session has expired. Sign in again.";

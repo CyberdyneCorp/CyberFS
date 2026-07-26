@@ -57,7 +57,7 @@ describe("overview view model", () => {
 
   it("surfaces a failure as a readable message", async () => {
     const api = createStubApi();
-    api.failWith = new NetworkError("down");
+    api.failWith = new NetworkError("CyberFS");
     const vm = createOverviewVM(api);
     await vm.load();
     expect(vm.state.error).toContain("Could not reach CyberFS");
@@ -69,7 +69,7 @@ describe("overview view model", () => {
     const api = createStubApi();
     const vm = createOverviewVM(api);
     await vm.load();
-    api.failWith = new NetworkError("down");
+    api.failWith = new NetworkError("CyberFS");
     await vm.load();
     expect(vm.state.data).not.toBeNull();
     expect(vm.state.error).not.toBeNull();
@@ -372,7 +372,7 @@ describe("sharing view model", () => {
     const api = createStubApi();
     const vm = createSharingVM(api);
     await vm.load();
-    api.failWith = new NetworkError("down");
+    api.failWith = new NetworkError("CyberFS");
     vm.askRevoke("l-1");
 
     await vm.confirmRevoke();
@@ -501,7 +501,7 @@ describe("audit view model", () => {
     const api = createStubApi();
     const vm = createAuditVM(api);
     await vm.load();
-    api.failWith = new NetworkError("down");
+    api.failWith = new NetworkError("CyberFS");
     await vm.load();
     expect(vm.state.entries).toEqual([]);
     expect(vm.state.error).not.toBeNull();
@@ -631,7 +631,7 @@ describe("health view model", () => {
     const api = createStubApi();
     const vm = createHealthVM(api);
     await vm.load();
-    api.failWith = new NetworkError("down");
+    api.failWith = new NetworkError("CyberFS");
 
     await vm.purge("perm");
 
