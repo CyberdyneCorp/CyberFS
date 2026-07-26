@@ -145,6 +145,20 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
+          # The runner ships client 16 and /usr/bin/pg_dump keeps resolving to it,
+          # so put 17 first on PATH. The production image installs only 17, which
+          # is why this hazard is CI-specific.
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm pg_dump matches the server
+        run: |
+          pg_dump --version
+          server=$(psql "postgresql://cyberfs:cyberfs@localhost:5432/cyberfs" -tAc "SHOW server_version")
+          echo "server: $server"
+          client_major=$(pg_dump --version | grep -oE '[0-9]+' | head -1)
+          server_major=$(echo "$server" | grep -oE '^[0-9]+')
+          test "$client_major" -ge "$server_major" \
+            || { echo "pg_dump $client_major is older than server $server_major"; exit 1; }
 
       # Migrations arrive with the data model (tasks 3.4). Until then this job
       # has nothing to run; the guard lifts itself as soon as alembic.ini lands
