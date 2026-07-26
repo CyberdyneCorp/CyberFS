@@ -43,6 +43,25 @@ class BackupToolUnavailableError(DependencyUnavailableError):
     title = "Backup tooling is unavailable"
 
 
+async def _tool_version(tool: str) -> str:
+    """`<tool> --version`, or a marker when it cannot be determined.
+
+    Best-effort and never raises: this runs on a failure path, where an
+    exception would replace a real error with a confusing one.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            tool,
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+    except Exception:
+        return "unknown"
+    return out.decode(errors="replace").strip() or "unknown"
+
+
 class MetadataDumpError(DependencyUnavailableError):
     """A dump or restore subprocess exited non-zero."""
 
@@ -150,7 +169,15 @@ class PgDumpMetadataDump:
             await proc.stderr.read()
         await proc.wait()
         if proc.returncode != 0:
-            # Log only the tool name and exit code -- never the DSN or stderr,
-            # which can echo connection parameters.
-            logger.error("metadata_tool_failed", tool=tool, returncode=proc.returncode)
+            # Never the DSN or stderr, which can echo connection parameters.
+            # The tool's own version is safe and is the single most useful fact
+            # here: `pg_dump` refuses a server newer than itself, and that
+            # mismatch is otherwise indistinguishable from any other non-zero
+            # exit once stderr has been dropped.
+            logger.error(
+                "metadata_tool_failed",
+                tool=tool,
+                returncode=proc.returncode,
+                tool_version=await _tool_version(tool),
+            )
             raise MetadataDumpError(f"{tool} exited with {proc.returncode}")
