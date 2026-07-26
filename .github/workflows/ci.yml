@@ -76,6 +76,11 @@ jobs:
 
     env:
       ENVIRONMENT: test
+      # Dependencies are guaranteed here, so an unreachable one is a failure
+      # rather than a skip. Without this the suite reported success while
+      # skipping almost all of itself, because the fixtures looked for the
+      # compose ports rather than the ones these services listen on.
+      CYBERFS_REQUIRE_INTEGRATION: "1"
       DATABASE_URL: postgresql+asyncpg://cyberfs:cyberfs@localhost:5432/cyberfs
       REDIS_URL: redis://localhost:6379/0
       MINIO_ENDPOINT: localhost:9000
