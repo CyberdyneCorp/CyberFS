@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
+from cyberfs.application.purge import Purged, purge_one
 from cyberfs.application.sharing import KeyRewrapper
 from cyberfs.domain.activity import ACTIVITY_ACTIONS
 from cyberfs.domain.auth.policy import utcnow
@@ -109,41 +110,19 @@ class PurgeJob:
         cutoff = moment - self._retention
         expired = await uow.nodes.list_trashed_before(cutoff, limit=self._batch)
 
-        nodes = objects = reclaimed = 0
+        total = Purged()
         for node in expired:
-            reclaimed += await self._purge_node(uow, node.id, node.owner_id, moment)
-            objects += await self._purge_objects(uow, node.id)
-            # Grants and wrapped keys go with it: a purged node must leave no
-            # way for a former recipient to reach anything.
-            await uow.grants.delete_for_node(node.id)
-            await uow.keys.delete_data_keys_for_node(node.id)
-            await uow.nodes.delete_permanently(node.id)
-            nodes += 1
+            total += await purge_one(uow, self._objects, node.id, moment)
 
         await uow.commit()
         job_runs_total.labels(job=self.name, outcome="success").inc()
-        logger.info("purge_completed", nodes=nodes, objects=objects, bytes=reclaimed)
-        return PurgeResult(nodes, objects, reclaimed)
-
-    async def _purge_objects(self, uow: UnitOfWork, node_id: uuid.UUID) -> int:
-        versions = await uow.versions.list_for_node(node_id)
-        for version in versions:
-            await self._objects.delete(version.object_key)
-            await uow.versions.delete(version.id)
-        return len(versions)
-
-    @staticmethod
-    async def _purge_node(
-        uow: UnitOfWork, node_id: uuid.UUID, owner_id: uuid.UUID, now: datetime
-    ) -> int:
-        node = await uow.nodes.get(node_id)
-        if node is None:
-            return 0
-        usage = await uow.quotas.get(owner_id)
-        if usage is not None:
-            usage.purge_from_trash(node.size_bytes, now)
-            await uow.quotas.update(usage)
-        return node.size_bytes
+        logger.info(
+            "purge_completed",
+            nodes=total.nodes_deleted,
+            objects=total.objects_deleted,
+            bytes=total.bytes_reclaimed,
+        )
+        return PurgeResult(total.nodes_deleted, total.objects_deleted, total.bytes_reclaimed)
 
 
 class OrphanReaper:

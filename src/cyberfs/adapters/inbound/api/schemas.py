@@ -122,6 +122,18 @@ class DeleteResult(BaseModel):
     deleted: int
 
 
+class PurgeResult(BaseModel):
+    """What an irreversible purge destroyed."""
+
+    #: How many nodes were destroyed, including descendants.
+    purged: int
+    #: How many stored objects were deleted, across every retained version.
+    objects_deleted: int
+    #: Bytes released from the owner's quota. Unlike a soft delete, these are
+    #: actually freed rather than moved between buckets.
+    bytes_reclaimed: int
+
+
 class VersionSummary(BaseModel):
     """One retained revision. Carries no key material and no object key."""
 

@@ -57,6 +57,10 @@ class AuditAction(StrEnum):
     NODE_DELETED = "node.deleted"
     NODE_RESTORED = "node.restored"
     VERSION_RESTORED = "version.restored"
+    # Irreversible destruction. Deliberately absent from `ACTIVITY_ACTIONS`, so
+    # it is classified as a security record and retained: a purge must stay
+    # attributable long after the activity around it has been pruned.
+    NODE_PURGED = "node.purged"
 
 
 class AuditProtocol(StrEnum):

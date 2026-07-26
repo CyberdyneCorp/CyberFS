@@ -316,6 +316,50 @@ def test_an_unknown_link_token_is_not_found(anonymous: httpx.Client) -> None:
 # --- discovery --------------------------------------------------------------
 
 
+def test_a_trashed_node_is_purged_and_frees_its_quota(api: httpx.Client, folder: str) -> None:
+    body = os.urandom(LARGE)
+    node_id = upload(api, folder, "purge-me.bin", body)["id"]
+    assert api.delete(f"/api/v1/nodes/{node_id}").status_code in (200, 204)
+
+    purged = api.post(f"/api/v1/nodes/{node_id}/purge")
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["bytes_reclaimed"] == len(body)
+
+    # Gone for good: not restorable, and its content is unreachable.
+    assert api.post(f"/api/v1/nodes/{node_id}/restore").status_code == 404
+    assert api.get(f"/api/v1/nodes/{node_id}/content").status_code == 404
+
+
+def test_a_live_node_cannot_be_purged(api: httpx.Client, folder: str) -> None:
+    body = os.urandom(2048)
+    node_id = upload(api, folder, "still-live.bin", body)["id"]
+
+    refused = api.post(f"/api/v1/nodes/{node_id}/purge")
+    assert refused.status_code == 409, refused.text
+    # Untouched, and still byte-identical.
+    assert api.get(f"/api/v1/nodes/{node_id}/content").content == body
+
+
+def test_purging_a_folder_destroys_its_subtree(api: httpx.Client, scratch: str) -> None:
+    outer = api.post(
+        f"/api/v1/nodes/{scratch}/folders", json={"name": f"purge-tree-{uuid4().hex[:8]}"}
+    ).json()["id"]
+    inner = api.post(f"/api/v1/nodes/{outer}/folders", json={"name": "inner"}).json()["id"]
+    deep = upload(api, inner, "deep.bin", os.urandom(4096))["id"]
+
+    assert api.delete(f"/api/v1/nodes/{outer}").status_code in (200, 204)
+    purged = api.post(f"/api/v1/nodes/{outer}/purge")
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["purged"] >= 3
+
+    for node_id in (outer, inner, deep):
+        assert api.get(f"/api/v1/nodes/{node_id}").status_code == 404
+
+
+def test_purging_an_unknown_node_is_not_found(api: httpx.Client) -> None:
+    assert api.post(f"/api/v1/nodes/{uuid4()}/purge").status_code == 404
+
+
 def test_search_finds_a_file_by_name(api: httpx.Client, folder: str) -> None:
     name = f"findable-{uuid4().hex[:8]}.bin"
     node_id = upload(api, folder, name, os.urandom(512))["id"]

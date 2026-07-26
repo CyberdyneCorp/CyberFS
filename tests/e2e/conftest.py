@@ -128,9 +128,10 @@ def scratch(api: httpx.Client, root_id: str) -> Iterator[str]:
 
     yield folder_id
 
-    # DELETE is a move to trash, not a purge -- there is no purge endpoint. The
-    # deployment's trash retention reclaims it later.
+    # Trash then purge, so the run leaves nothing occupying the deployment's
+    # quota. Purge requires the node to be in the trash first, by design.
     api.delete(f"/api/v1/nodes/{folder_id}")
+    api.post(f"/api/v1/nodes/{folder_id}/purge")
 
 
 @pytest.fixture

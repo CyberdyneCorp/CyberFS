@@ -111,6 +111,11 @@ back, and `PurgeJob` is untouched throughout.
 
 ## Open Questions
 
-- Should purge be refused while an async rewrap is in flight for that subtree? The
-  rewrap worker would find its nodes gone, which is probably benign but has not
-  been checked. Worth confirming during implementation.
+**Resolved during implementation: purge needs no coordination with async rewrap.**
+`RewrapJob.run` already re-reads each pending grant's node and drops the grant
+together with its partially written keys when the node is missing or trashed
+(`application/jobs.py:321`), specifically so it cannot loop on a vanished share.
+A purged node therefore causes the grant to be dropped on the next tick, and the
+must-be-trashed precondition means the grant was already being dropped before the
+purge. No guard is required; a test pins the behaviour so a future change to the
+rewrap loop cannot silently regress it.

@@ -20,6 +20,7 @@ from cyberfs.adapters.inbound.api.schemas import (
     MoveRequest,
     NodeDetail,
     NodePage,
+    PurgeResult,
     RenameRequest,
     SearchResults,
 )
@@ -166,6 +167,38 @@ async def delete_node(
     deleted = await _service(request).delete(uow, user, node_id, if_match=if_match)
     await uow.commit()
     return DeleteResult(deleted=deleted)
+
+
+@router.post(
+    "/nodes/{node_id}/purge",
+    response_model=PurgeResult,
+    summary="Destroy a trashed node permanently",
+    responses={
+        int(HTTPStatus.CONFLICT): {"description": "The node is not in the trash"},
+        int(HTTPStatus.NOT_FOUND): {"description": "No such node, or already purged"},
+    },
+)
+async def purge_node(
+    node_id: uuid.UUID,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+) -> PurgeResult:
+    """Irreversible. The node must already have been moved to the trash."""
+    purged = await _service(request).purge(
+        uow,
+        user,
+        node_id,
+        # The object store is the only way to actually free the bytes; metadata
+        # deletion alone would strand them.
+        objects=request.app.state.objects,
+    )
+    await uow.commit()
+    return PurgeResult(
+        purged=purged.nodes_deleted,
+        objects_deleted=purged.objects_deleted,
+        bytes_reclaimed=purged.bytes_reclaimed,
+    )
 
 
 @router.post("/nodes/{node_id}/restore", response_model=NodeDetail, summary="Restore from trash")

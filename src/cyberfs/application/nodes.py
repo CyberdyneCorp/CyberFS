@@ -14,9 +14,11 @@ from typing import Protocol
 
 from cyberfs.application.auditing import authorize_or_record, emit_audit, owner_context
 from cyberfs.application.caching import CacheService
+from cyberfs.application.purge import Purged, purge_one
 from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
+    ConflictError,
     CrossOwnerMoveError,
     NameTakenError,
     NotFoundError,
@@ -34,6 +36,7 @@ from cyberfs.domain.nodes import (
 )
 from cyberfs.domain.permissions import resolve_effective_role
 from cyberfs.domain.ports.repositories import Page, UnitOfWork
+from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.s3.namespace import SHARED_PREFIX
 from cyberfs.domain.sharing import Role
 from cyberfs.domain.users import User
@@ -339,6 +342,76 @@ class NodeService:
         await self._audit(uow, user, node, AuditAction.NODE_RESTORED, moment)
         await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
         return await self._view(uow, node, Role.OWNER)
+
+    async def purge(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        *,
+        objects: ObjectStore,
+        now: datetime | None = None,
+    ) -> Purged:
+        """Destroy a trashed node and its subtree. Irreversible.
+
+        Requires the node to be in the trash already, so losing content takes
+        two deliberate steps. The owner may purge their own; an administrator
+        may purge anyone's, and the quota released is always the owner's.
+        """
+        moment = now or utcnow()
+        node = await uow.nodes.get(node_id)
+        if node is None:
+            raise NotFoundError("node not found", node_id=str(node_id))
+
+        # Authorize before disclosing whether the node is trashed or live, and
+        # record the denial rather than only refusing it.
+        if node.owner_id != user.id and not user.is_admin:
+            await authorize_or_record(
+                uow,
+                actor_subject=user.subject,
+                node_id=node_id,
+                effective=resolve_effective_role(is_owner=False),
+                minimum=Role.OWNER,
+            )
+
+        if not node.is_deleted:
+            raise ConflictError(
+                "only a node in the trash can be purged; delete it first",
+                node_id=str(node_id),
+            )
+
+        # Descendants first. Deleting the root's row cascades to their rows, so
+        # purging it before them would leave their objects in the store with no
+        # metadata pointing at them, and undercount the quota released.
+        subtree = await uow.nodes.descendants(
+            node.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
+        )
+        total = Purged()
+        for descendant in subtree:
+            total += await purge_one(uow, objects, descendant.id, moment)
+        total += await purge_one(uow, objects, node.id, moment)
+
+        await uow.flush()
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=AuditAction.NODE_PURGED,
+                occurred_at=moment,
+                actor_subject=user.subject,
+                target_id=str(node.id),
+                context={
+                    **owner_context(node, user.id),
+                    # Named separately so an administrator's purge of someone
+                    # else's node stays attributable to both parties.
+                    "owner_id": str(node.owner_id),
+                    "nodes": total.nodes_deleted,
+                    "objects": total.objects_deleted,
+                    "bytes": total.bytes_reclaimed,
+                },
+            ),
+        )
+        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
+        return total
 
     async def copy(
         self,

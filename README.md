@@ -9,8 +9,8 @@ OAuth2/OIDC **resource server**; it keeps no passwords and runs no login flow.
 Highlights:
 
 - **Hierarchical filesystem** — folders, files, rename/move, trash with
-  retention, content versioning, and metadata search (`/api/v1/nodes`,
-  `/api/v1/search`).
+  retention, on-demand purge, content versioning, and metadata search
+  (`/api/v1/nodes`, `/api/v1/search`).
 - **Sharing** — per-node grants with roles, "shared with me", public links with
   rate-limited access, and ownership transfer (`/api/v1/shares`, see the
   [sharing spec](openspec/changes/bootstrap-cyberfs/specs/sharing/spec.md)).
@@ -125,7 +125,12 @@ rather than failing later. Every setting appears in
 - **Encryption** — `MASTER_KEY`, `MASTER_KEY_PREVIOUS` (rotation),
   `ENCRYPTION_DEFAULT_ON`, `ENCRYPTION_FRAME_BYTES`, `ASYNC_REWRAP_THRESHOLD_NODES`
 - **Filesystem** — quotas, upload limits, tree depth, pagination, version and
-  trash retention
+  trash retention. `TRASH_RETENTION_DAYS` bounds how long trash survives on its
+  own; `POST /api/v1/nodes/{id}/purge` destroys a **trashed** node sooner and
+  frees its quota in the same request. Purge is irreversible: it refuses a live
+  node with `409` so losing content takes two deliberate steps, and what a
+  backup taken beforehand still holds is governed by
+  [the restore runbook](docs/restore-runbook.md) rather than guaranteed here.
 - **Cache** — per-kind Redis TTLs, operation timeout, circuit breaker, schema version
 - **Sharing / admin** — `PUBLIC_LINK_MAX_ATTEMPTS_PER_MIN`, `ADMIN_SHOW_FILENAMES`
 - **Backup** — `BACKUP_ENABLED`, `BACKUP_CRON`, `BACKUP_S3_*`, retention

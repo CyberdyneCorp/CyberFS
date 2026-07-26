@@ -52,7 +52,7 @@ Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, 
 #### Scenario: A non-owner without administrator rights may not purge
 
 - **WHEN** a caller who is neither the owner nor an administrator requests a purge, including a recipient holding a share of that node
-- **THEN** the system SHALL refuse and SHALL destroy nothing
+- **THEN** the system SHALL refuse with `404`, indistinguishably from a node that does not exist, and SHALL destroy nothing
 
 #### Scenario: Purge is attributable after activity records age out
 
