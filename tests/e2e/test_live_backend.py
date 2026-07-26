@@ -350,7 +350,10 @@ def test_purging_a_folder_destroys_its_subtree(api: httpx.Client, scratch: str) 
     assert api.delete(f"/api/v1/nodes/{outer}").status_code in (200, 204)
     purged = api.post(f"/api/v1/nodes/{outer}/purge")
     assert purged.status_code == 200, purged.text
-    assert purged.json()["purged"] >= 3
+    # Exact, not a lower bound: an undercount here means a descendant's row was
+    # cascaded away before its object was deleted, stranding it in the store.
+    assert purged.json()["purged"] == 3, purged.text
+    assert purged.json()["objects_deleted"] == 1
 
     for node_id in (outer, inner, deep):
         assert api.get(f"/api/v1/nodes/{node_id}").status_code == 404

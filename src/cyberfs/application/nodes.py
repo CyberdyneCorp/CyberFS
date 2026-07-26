@@ -14,7 +14,7 @@ from typing import Protocol
 
 from cyberfs.application.auditing import authorize_or_record, emit_audit, owner_context
 from cyberfs.application.caching import CacheService
-from cyberfs.application.purge import Purged, purge_one
+from cyberfs.application.purge import Purged, purge_subtree
 from cyberfs.domain.audit import AuditAction, AuditRecord
 from cyberfs.domain.auth.policy import utcnow
 from cyberfs.domain.errors import (
@@ -380,16 +380,16 @@ class NodeService:
                 node_id=str(node_id),
             )
 
-        # Descendants first. Deleting the root's row cascades to their rows, so
-        # purging it before them would leave their objects in the store with no
-        # metadata pointing at them, and undercount the quota released.
+        # Every node is stripped of its objects before any row is deleted.
+        # `NodeRow.parent_id` cascades, so deleting rows during the walk would
+        # let a descendant's row vanish before its object key had been used --
+        # stranding the object in the store and undercounting the quota freed.
         subtree = await uow.nodes.descendants(
             node.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
         )
-        total = Purged()
-        for descendant in subtree:
-            total += await purge_one(uow, objects, descendant.id, moment)
-        total += await purge_one(uow, objects, node.id, moment)
+        total = await purge_subtree(
+            uow, objects, [*(d.id for d in subtree), node.id], node.id, moment
+        )
 
         await uow.flush()
         await emit_audit(
