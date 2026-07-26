@@ -114,6 +114,16 @@ def _parse_cron(expr: str) -> _CronFields:
     )
 
 
+def validate_cron(expr: str) -> None:
+    """Raise `CronError` unless `expr` is a usable five-field cron expression.
+
+    Exists so configuration can be rejected at load rather than at the first
+    tick: a schedule that cannot be parsed is a broken deployment, and finding
+    out hours later via a staleness alert is far worse than refusing to boot.
+    """
+    _parse_cron(expr)
+
+
 def _cron_weekday(moment: datetime) -> int:
     """Convert Python's Monday=0 weekday to cron's Sunday=0."""
     return (moment.weekday() + 1) % 7

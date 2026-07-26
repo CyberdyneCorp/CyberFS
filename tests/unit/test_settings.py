@@ -147,6 +147,33 @@ def test_dev_mode_rejected_in_deployed_environments(env: Environment) -> None:
         build(environment=env, auth_dev_mode=True, master_key=REAL_MASTER_KEY)
 
 
+# --- schedules -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["backup_cron", "rewrap_cron"])
+@pytest.mark.parametrize("expression", ["", "   ", "disabled", "never", "0 3 * *", "99 3 * * *"])
+def test_an_unparseable_cron_refuses_to_boot(field: str, expression: str) -> None:
+    """Regression: a bad schedule used to be accepted and fail hours later.
+
+    `seconds_until_next` parses on every tick, so the failure surfaced as a
+    background task that had stopped -- the service healthy, the job silently
+    never running, and nothing wrong until a staleness alert.
+    """
+    with pytest.raises(ValidationError, match="cron"):
+        build(**{field: expression})
+
+
+@pytest.mark.parametrize("expression", ["0 3 * * *", "*/2 * * * *", "0 0 1 * 0", "15,45 * * * 1-5"])
+def test_valid_cron_expressions_are_accepted(expression: str) -> None:
+    assert build(backup_cron=expression).backup_cron == expression
+
+
+def test_the_shipped_defaults_are_valid() -> None:
+    settings = build()
+    assert settings.backup_cron == "0 3 * * *"
+    assert settings.rewrap_cron == "*/2 * * * *"
+
+
 # --- backup target ---------------------------------------------------------
 
 

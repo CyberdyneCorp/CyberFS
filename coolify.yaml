@@ -60,7 +60,8 @@ environment:
   - DATABASE_URL # optional; defaults to the internal postgres service
   - REDIS_URL # optional; defaults to the internal redis service
   # Backups (optional)
-  - BACKUP_ENABLED # default: false
+  - BACKUP_ENABLED # default: false; the only way to turn backups off
+  - BACKUP_CRON # default: 0 3 * * * (UTC). Validated at boot; no "off" value.
   - BACKUP_S3_ENDPOINT
   - BACKUP_S3_BUCKET
   # TLS for the backup target only. Unset follows MINIO_SECURE, which is right

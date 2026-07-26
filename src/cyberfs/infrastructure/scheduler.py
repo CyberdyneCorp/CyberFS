@@ -23,6 +23,10 @@ from cyberfs.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: How long to wait before re-reading a schedule that could not be parsed.
+#: Long enough not to spin, short enough to recover if the cause was transient.
+_UNREADABLE_SCHEDULE_BACKOFF_SECONDS = 60.0
+
 Callback = Callable[[], Awaitable[None]]
 SkipHook = Callable[[], Awaitable[None]]
 Clock = Callable[[], datetime]
@@ -98,10 +102,25 @@ class CronScheduler:
 
     async def _loop(self) -> None:
         while True:
-            await asyncio.sleep(self.seconds_until_next())
+            await asyncio.sleep(self._next_delay())
             try:
                 await self.trigger()
             except asyncio.CancelledError:
                 raise
             except Exception:  # a job error must not kill the loop
                 logger.exception("scheduled_run_failed", job=self._name)
+
+    def _next_delay(self) -> float:
+        """How long to sleep before the next attempt.
+
+        Guarded because computing it parses the cron expression: an unguarded
+        failure here escapes `_loop` and kills the task outright, leaving the
+        service healthy while the job silently never runs again. `Settings`
+        rejects an unparseable schedule at boot, so this is the belt to that
+        braces -- back off and keep the loop alive rather than disappear.
+        """
+        try:
+            return self.seconds_until_next()
+        except Exception:
+            logger.exception("schedule_unreadable", job=self._name, cron=self._cron)
+            return _UNREADABLE_SCHEDULE_BACKOFF_SECONDS

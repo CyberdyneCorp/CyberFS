@@ -86,6 +86,59 @@ async def test_loop_fires_then_stops(monkeypatch: pytest.MonkeyPatch) -> None:
     await sched.stop()
 
 
+async def test_loop_survives_an_unreadable_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a schedule that fails to parse used to kill the loop.
+
+    `seconds_until_next` ran outside the guard, so the exception escaped
+    `_loop`, the task died, and the service stayed healthy while the job never
+    ran again. Settings now rejects such a value at boot; this is the backstop
+    for anything that still reaches the loop.
+    """
+    real_sleep = asyncio.sleep
+    fired = asyncio.Event()
+    calls = 0
+
+    async def fast_sleep(_seconds: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(scheduler_module.asyncio, "sleep", fast_sleep)
+
+    async def callback() -> None:
+        fired.set()
+
+    sched = CronScheduler("* * * * *", callback, clock=_clock())
+
+    def flaky_next() -> float:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("schedule cannot be parsed")
+        return 0.0
+
+    monkeypatch.setattr(sched, "seconds_until_next", flaky_next)
+
+    await sched.start()
+    # The loop must reach a second computation and then fire, rather than die.
+    await asyncio.wait_for(fired.wait(), timeout=1.0)
+    await sched.stop()
+    assert calls >= 2
+
+
+async def test_an_unreadable_schedule_backs_off_rather_than_spinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def callback() -> None:  # pragma: no cover - never reached
+        raise AssertionError("callback must not run")
+
+    sched = CronScheduler("* * * * *", callback, clock=_clock())
+    monkeypatch.setattr(
+        sched, "seconds_until_next", lambda: (_ for _ in ()).throw(ValueError("bad"))
+    )
+
+    # A zero delay here would spin the event loop hot on a broken schedule.
+    assert sched._next_delay() == scheduler_module._UNREADABLE_SCHEDULE_BACKOFF_SECONDS
+
+
 async def test_loop_survives_a_failing_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     real_sleep = asyncio.sleep
     attempts = 0

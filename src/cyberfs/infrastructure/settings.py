@@ -16,6 +16,8 @@ from typing import Annotated, Self
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from cyberfs.domain.schedule import CronError, validate_cron
+
 MASTER_KEY_BYTES = 32
 
 # Shipped in .env.example and docker-compose so a fresh clone runs. Rejected in
@@ -259,6 +261,24 @@ class Settings(BaseSettings):
             and self.backup_s3_bucket == self.minio_bucket
         ):
             raise ValueError("backup target must differ from the primary MinIO endpoint and bucket")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cron_expressions(self) -> Self:
+        """Refuse to boot on a schedule that cannot be parsed.
+
+        The scheduler computes its next fire time on every tick, so a bad
+        expression would otherwise surface long after startup -- as a background
+        task that stopped, with the job silently never running.
+        """
+        for name, expression in (
+            ("BACKUP_CRON", self.backup_cron),
+            ("REWRAP_CRON", self.rewrap_cron),
+        ):
+            try:
+                validate_cron(expression)
+            except CronError as exc:
+                raise ValueError(f"{name} is not a valid cron expression: {exc}") from exc
         return self
 
     @model_validator(mode="after")
