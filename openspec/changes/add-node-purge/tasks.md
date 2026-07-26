@@ -40,13 +40,16 @@
 - [x] 5.7 Integration: the endpoint returns `409` for a live node and `404` for an unknown one
 - [x] 5.8 Integration: quota reported by the API drops immediately after a purge
 - [x] 5.9 Integration: a purged node's public link stops resolving
-- [ ] 5.10 E2E: purge a trashed folder against a deployment and confirm it leaves the root clean
+- [x] 5.10 E2E: purge a trashed folder against a deployment and confirm it leaves the root clean
 - [x] 5.11 Switch the e2e scratch teardown from delete to purge, so the suite stops leaving trash behind
 
 ## 6. Verification and documentation
 
 - [x] 6.1 `just lint`, `just typecheck`, and `just test-unit` clean
-- [ ] 6.2 `just test-integration` clean against real Postgres, Redis, and MinIO
-- [ ] 6.3 `just test-e2e` clean against the deployment
+- [ ] 6.2 `just test-integration` clean against real Postgres, Redis, and MinIO --
+      NOT RUN locally: no Docker daemon on the dev machine, so the 10 tests in
+      tests/integration/test_api_purge.py skip. CI runs them (.github/workflows/ci.yml).
+      Verify on the PR/CI run before considering this change closed.
+- [x] 6.3 `just test-e2e` clean against the deployment
 - [x] 6.4 Document the endpoint and its irreversibility in the API docs, and cross-reference `docs/restore-runbook.md` for what a prior backup does and does not guarantee
 - [x] 6.5 Run `openspec validate add-node-purge`
