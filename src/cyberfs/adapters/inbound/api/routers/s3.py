@@ -94,6 +94,13 @@ def create_s3_router(base_path: str) -> APIRouter:
     """
     router = APIRouter(prefix=base_path, tags=["s3"])
 
+    # Both spellings, because a client configured with `endpoint_url=.../s3`
+    # issues `GET /s3` while one given `.../s3/` issues `GET /s3/`. Serving only
+    # the latter makes Starlette answer the former with a 307, and a redirect is
+    # useless for a SigV4 request: the signature covers the path, so the
+    # redirected request cannot verify. boto3 compounds it by reading the
+    # redirect as a cross-region hint and calling HeadBucket with no bucket.
+    @router.get("", include_in_schema=False)
     @router.get("/")
     async def list_buckets(request: Request, uow: UnitOfWorkDep) -> Response:
         try:

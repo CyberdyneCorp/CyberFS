@@ -163,6 +163,13 @@ bucket.
 - **WHEN** a caller issues `ListBuckets`
 - **THEN** the response SHALL contain exactly one bucket, named for their subject
 
+#### Scenario: The service root answers with or without a trailing slash
+
+- **WHEN** `ListBuckets` arrives at the S3 base path either with or without a
+  trailing slash
+- **THEN** the system SHALL answer it directly and SHALL NOT redirect, because a
+  SigV4 signature covers the path and a redirected request cannot verify
+
 #### Scenario: A path maps to a key
 
 - **WHEN** a caller reads the key `reports/q3.xlsx`

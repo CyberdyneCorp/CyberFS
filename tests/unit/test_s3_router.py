@@ -79,6 +79,19 @@ def test_list_buckets_returns_the_callers_bucket(client: TestClient) -> None:
     assert "<Name>alice</Name>" in response.text
 
 
+def test_list_buckets_answers_without_a_trailing_slash(client: TestClient) -> None:
+    """Regression: `/s3` used to 307 to `/s3/`.
+
+    A client configured with `endpoint_url=.../s3` sends exactly this. A redirect
+    cannot work for SigV4 -- the signature covers the path -- and boto3 reads the
+    redirect as a cross-region hint, then calls HeadBucket with no bucket and
+    raises a TypeError from inside its own retry handler.
+    """
+    response = client.get("/s3", headers=ALICE, follow_redirects=False)
+    assert response.status_code == 200, response.text
+    assert "<Name>alice</Name>" in response.text
+
+
 def test_list_objects_v2_lists_the_tree(client: TestClient) -> None:
     response = client.get(
         "/s3/alice", params={"list-type": "2", "prefix": "reports/"}, headers=ALICE
