@@ -46,10 +46,10 @@
 ## 6. Verification and documentation
 
 - [x] 6.1 `just lint`, `just typecheck`, and `just test-unit` clean
-- [ ] 6.2 `just test-integration` clean against real Postgres, Redis, and MinIO --
-      NOT RUN locally: no Docker daemon on the dev machine, so the 10 tests in
-      tests/integration/test_api_purge.py skip. CI runs them (.github/workflows/ci.yml).
-      Verify on the PR/CI run before considering this change closed.
+- [x] 6.2 `just test-integration` clean against real Postgres, Redis, and MinIO --
+      verified in CI (run 013eb45: 219 passed, 7 skipped, 0 failed), including all
+      10 tests in tests/integration/test_api_purge.py. Still unrun on the dev
+      machine, which has no Docker daemon.
 - [x] 6.3 `just test-e2e` clean against the deployment
 - [x] 6.4 Document the endpoint and its irreversibility in the API docs, and cross-reference `docs/restore-runbook.md` for what a prior backup does and does not guarantee
 - [x] 6.5 Run `openspec validate add-node-purge`
