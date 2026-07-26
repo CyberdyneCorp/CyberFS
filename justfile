@@ -81,6 +81,15 @@ test-unit:
 test-integration:
     uv run pytest tests/integration -m integration
 
+# Against a DEPLOYED CyberFS, over its real ingress. Writes real data into the
+# target's Postgres and object store (inside one scratch folder, trashed after),
+# and its operations appear in that deployment's audit log. Needs
+# CYBERFS_LIVE_API_BASE_URL plus either CYBERFS_LIVE_USER_TOKEN or
+# CYBERFS_LIVE_AUTH_BASE_URL + CYBERFS_LIVE_EMAIL + CYBERFS_LIVE_PASSWORD.
+# See tests/e2e/conftest.py.
+test-e2e:
+    uv run pytest tests/e2e -m e2e
+
 test-cov:
     uv run pytest tests/unit --cov --cov-report=term-missing --cov-report=html
 
