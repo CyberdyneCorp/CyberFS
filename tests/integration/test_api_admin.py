@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import Iterator
 from http import HTTPStatus
@@ -14,7 +13,7 @@ from minio import Minio
 from cyberfs.adapters.inbound.api.app import create_app
 from cyberfs.infrastructure.settings import Environment
 
-from .conftest import build_settings
+from .conftest import build_settings, minio_endpoint, redis_url
 
 pytestmark = pytest.mark.integration
 
@@ -23,8 +22,8 @@ ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
 PAYLOAD = b"admin-visible-only-as-a-number" * 30
 
-ENDPOINT = os.environ.get("CYBERFS_TEST_MINIO_ENDPOINT", "localhost:9000")
-REDIS_URL = os.environ.get("CYBERFS_TEST_REDIS_URL", "redis://localhost:6380/0")
+ENDPOINT = minio_endpoint()
+REDIS_URL = redis_url()
 _unreachable: str | None = None
 
 
@@ -424,7 +423,16 @@ def test_the_operations_view_reports_dependencies(client: TestClient) -> None:
 def test_the_operations_view_lists_every_expected_job(client: TestClient) -> None:
     operations = client.get("/api/v1/admin/operations", headers=ADMIN).json()
     names = {job["name"] for job in operations["jobs"]}
-    assert names == {"purge", "orphan_reaper", "reconcile_quotas", "backup", "activity_prune"}
+    assert names == {
+        "purge",
+        "orphan_reaper",
+        "reconcile_quotas",
+        "backup",
+        "activity_prune",
+        # Added with async rewrap for large shared subtrees; the operations view
+        # must list every registered job, so a new one belongs here too.
+        "rewrap",
+    }
 
 
 def test_a_job_that_has_never_run_says_so(client: TestClient) -> None:

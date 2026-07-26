@@ -14,7 +14,6 @@ installed, so the suite stays runnable on a workstation without the tooling.
 
 from __future__ import annotations
 
-import os
 import shutil
 import uuid
 from urllib.parse import urlsplit, urlunsplit
@@ -37,16 +36,22 @@ from cyberfs.infrastructure.migrate import alembic_config
 from cyberfs.infrastructure.settings import Environment, Settings
 from cyberfs.restore import _key_available, _readiness, _target_is_empty
 
-from .conftest import build_settings, database_url
+from .conftest import (
+    build_settings,
+    database_url,
+    minio_access_key,
+    minio_endpoint,
+    minio_secret_key,
+)
 
 pytestmark = pytest.mark.integration
 
 ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
 
-ENDPOINT = os.environ.get("CYBERFS_TEST_MINIO_ENDPOINT", "localhost:9000")
-ACCESS_KEY = os.environ.get("CYBERFS_TEST_MINIO_ACCESS_KEY", "cyberfs")
-SECRET_KEY = os.environ.get("CYBERFS_TEST_MINIO_SECRET_KEY", "cyberfs-dev-secret")
+ENDPOINT = minio_endpoint()
+ACCESS_KEY = minio_access_key()
+SECRET_KEY = minio_secret_key()
 
 PLAIN_V1 = b"first revision of the plain file\n" * 40
 PLAIN_V2 = b"second revision, replacing the first\n" * 40

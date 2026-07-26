@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import uuid
 from collections.abc import Iterator
@@ -15,7 +14,7 @@ from minio import Minio
 from cyberfs.adapters.inbound.api.app import create_app
 from cyberfs.infrastructure.settings import Environment
 
-from .conftest import build_settings
+from .conftest import build_settings, minio_endpoint
 
 pytestmark = pytest.mark.integration
 
@@ -23,7 +22,7 @@ ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
 PAYLOAD = b"the quick brown fox jumps over the lazy dog\n" * 100
 
-ENDPOINT = os.environ.get("CYBERFS_TEST_MINIO_ENDPOINT", "localhost:9000")
+ENDPOINT = minio_endpoint()
 _unreachable: str | None = None
 
 

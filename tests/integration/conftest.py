@@ -49,6 +49,22 @@ def redis_url() -> str:
     return _setting("CYBERFS_TEST_REDIS_URL", "REDIS_URL", default=DEFAULT_TEST_REDIS_URL)
 
 
+def minio_endpoint() -> str:
+    return _setting(
+        "CYBERFS_TEST_MINIO_ENDPOINT", "MINIO_ENDPOINT", default=DEFAULT_TEST_MINIO_ENDPOINT
+    )
+
+
+def minio_access_key() -> str:
+    return _setting("CYBERFS_TEST_MINIO_ACCESS_KEY", "MINIO_ACCESS_KEY", default="cyberfs")
+
+
+def minio_secret_key() -> str:
+    return _setting(
+        "CYBERFS_TEST_MINIO_SECRET_KEY", "MINIO_SECRET_KEY", default="cyberfs-dev-secret"
+    )
+
+
 def unreachable(reason: str) -> None:
     """Skip, unless the runner has declared that these tests must run.
 
@@ -71,17 +87,11 @@ def build_settings(**overrides: object) -> Settings:
         "environment": Environment.TEST,
         "database_url": database_url(),
         "redis_url": redis_url(),
-        "minio_endpoint": _setting(
-            "CYBERFS_TEST_MINIO_ENDPOINT", "MINIO_ENDPOINT", default=DEFAULT_TEST_MINIO_ENDPOINT
-        ),
+        "minio_endpoint": minio_endpoint(),
         # Must match whatever MinIO the runner started, or every object-store
         # test fails on authentication rather than on the behaviour under test.
-        "minio_access_key": _setting(
-            "CYBERFS_TEST_MINIO_ACCESS_KEY", "MINIO_ACCESS_KEY", default="cyberfs"
-        ),
-        "minio_secret_key": _setting(
-            "CYBERFS_TEST_MINIO_SECRET_KEY", "MINIO_SECRET_KEY", default="cyberfs-dev-secret"
-        ),
+        "minio_access_key": minio_access_key(),
+        "minio_secret_key": minio_secret_key(),
         "minio_bucket": "cyberfs-content",
         "minio_secure": False,
         "cyberdyne_auth_base_url": "https://auth.example.test",

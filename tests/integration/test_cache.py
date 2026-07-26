@@ -7,7 +7,6 @@ the very next request.
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
@@ -24,12 +23,12 @@ from cyberfs.domain.cache import Dataset, cache_key
 from cyberfs.domain.errors import CacheUnavailableError
 from cyberfs.infrastructure.settings import Environment
 
-from .conftest import build_settings
+from .conftest import build_settings, minio_endpoint, redis_url
 
 pytestmark = pytest.mark.integration
 
-REDIS_URL = os.environ.get("CYBERFS_TEST_REDIS_URL", "redis://localhost:6380/0")
-MINIO_ENDPOINT = os.environ.get("CYBERFS_TEST_MINIO_ENDPOINT", "localhost:9000")
+REDIS_URL = redis_url()
+MINIO_ENDPOINT = minio_endpoint()
 ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
 PAYLOAD = b"cached content" * 40
@@ -202,7 +201,7 @@ def test_revocation_still_beats_the_cache(client: TestClient) -> None:
     cached, and the revocation still has to deny him on the next request.
     """
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "team-docs")
     client.put(
         f"/api/v1/nodes/{folder}/grants",
         json={"recipient": "bob", "role": "viewer"},
@@ -218,7 +217,7 @@ def test_revocation_still_beats_the_cache(client: TestClient) -> None:
 
 def test_a_narrowed_grant_takes_effect_at_once(client: TestClient) -> None:
     root_id(client, BOB)
-    folder = make_folder(client, ALICE, root_id(client, ALICE), "shared")
+    folder = make_folder(client, ALICE, root_id(client, ALICE), "team-docs")
     client.put(
         f"/api/v1/nodes/{folder}/grants",
         json={"recipient": "bob", "role": "editor"},
@@ -264,7 +263,7 @@ def test_a_rename_is_visible_immediately(client: TestClient) -> None:
 def test_a_move_updates_inherited_access_immediately(client: TestClient) -> None:
     root_id(client, BOB)
     alice_root = root_id(client, ALICE)
-    shared = make_folder(client, ALICE, alice_root, "shared")
+    shared = make_folder(client, ALICE, alice_root, "team-docs")
     private = make_folder(client, ALICE, alice_root, "private")
     item = make_folder(client, ALICE, shared, "item")
     client.put(

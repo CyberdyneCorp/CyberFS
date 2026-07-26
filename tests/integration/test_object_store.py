@@ -17,11 +17,13 @@ from minio import Minio
 from cyberfs.adapters.outbound.objects.minio_store import MinioObjectStore
 from cyberfs.domain.errors import NotFoundError
 
+from .conftest import minio_access_key, minio_endpoint, minio_secret_key
+
 pytestmark = pytest.mark.integration
 
-ENDPOINT = os.environ.get("CYBERFS_TEST_MINIO_ENDPOINT", "localhost:9000")
-ACCESS_KEY = os.environ.get("CYBERFS_TEST_MINIO_ACCESS_KEY", "cyberfs")
-SECRET_KEY = os.environ.get("CYBERFS_TEST_MINIO_SECRET_KEY", "cyberfs-dev-secret")
+ENDPOINT = minio_endpoint()
+ACCESS_KEY = minio_access_key()
+SECRET_KEY = minio_secret_key()
 BUCKET = os.environ.get("CYBERFS_TEST_MINIO_BUCKET", "cyberfs-test")
 
 _unreachable: str | None = None
