@@ -63,6 +63,10 @@ environment:
   - BACKUP_ENABLED # default: false
   - BACKUP_S3_ENDPOINT
   - BACKUP_S3_BUCKET
+  # TLS for the backup target only. Unset follows MINIO_SECURE, which is right
+  # for a same-host target; set true for an off-site one reached over https,
+  # since the primary store is internal plaintext.
+  - BACKUP_S3_SECURE
 
 # Notes:
 #   * ENVIRONMENT is pinned to `production` in compose.coolify.yaml.

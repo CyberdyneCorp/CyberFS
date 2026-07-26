@@ -170,6 +170,37 @@ def test_backup_target_may_not_be_the_primary() -> None:
         )
 
 
+def test_backup_tls_follows_the_primary_when_unset() -> None:
+    settings = build(
+        backup_enabled=True,
+        minio_secure=False,
+        backup_s3_endpoint="backup.example:9000",
+        backup_s3_bucket="cyberfs-backup",
+        backup_s3_access_key="k",
+        backup_s3_secret_key="s",
+    )
+    assert settings.backup_target_secure is False
+
+
+def test_backup_tls_is_independent_of_the_primary() -> None:
+    """The realistic shape: internal primary in plaintext, off-site target on TLS.
+
+    Reusing MINIO_SECURE for both made an off-site backup impossible to reach
+    over https whenever the primary was internal.
+    """
+    settings = build(
+        backup_enabled=True,
+        minio_secure=False,
+        backup_s3_secure=True,
+        backup_s3_endpoint="backup.example.com",
+        backup_s3_bucket="cyberfs-backup",
+        backup_s3_access_key="k",
+        backup_s3_secret_key="s",
+    )
+    assert settings.minio_secure is False
+    assert settings.backup_target_secure is True
+
+
 def test_backup_target_on_same_host_different_bucket_is_allowed() -> None:
     settings = build(
         backup_enabled=True,

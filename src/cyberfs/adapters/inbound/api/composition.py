@@ -393,7 +393,9 @@ def build_backup_object_store(settings: Settings) -> MinioObjectStore:
             settings.backup_s3_endpoint,
             access_key=settings.backup_s3_access_key.get_secret_value(),
             secret_key=settings.backup_s3_secret_key.get_secret_value(),
-            secure=settings.minio_secure,
+            # Not `minio_secure`: an off-site target is usually TLS while the
+            # primary is plaintext on an internal network.
+            secure=settings.backup_target_secure,
             region=settings.minio_region,
         ),
         settings.backup_s3_bucket,

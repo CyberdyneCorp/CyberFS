@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     backup_s3_access_key: SecretStr | None = None
     backup_s3_secret_key: SecretStr | None = None
     backup_s3_bucket: str | None = None
+    # TLS for the *backup* target, independent of the primary store. The two
+    # normally differ: the primary is reached over an internal network in
+    # plaintext, while an off-site target is public and therefore TLS. Unset
+    # follows `MINIO_SECURE`, which is what a same-host target wants.
+    backup_s3_secure: bool | None = None
     backup_verify_sample_count: PositiveInt = 50
     backup_keep_daily: NonNegativeInt = 7
     backup_keep_weekly: NonNegativeInt = 4
@@ -191,6 +196,11 @@ class Settings(BaseSettings):
     backup_history_days: PositiveInt = 90
 
     # --- derived -------------------------------------------------------
+
+    @property
+    def backup_target_secure(self) -> bool:
+        """Whether the backup target speaks TLS. Falls back to the primary."""
+        return self.minio_secure if self.backup_s3_secure is None else self.backup_s3_secure
 
     @property
     def is_production(self) -> bool:
