@@ -138,6 +138,7 @@ def test_boto3_lists_and_downloads_identically_to_rest(base_url: str) -> None:
         headers={**ALICE, "Content-Type": "text/plain"},
     )
     assert upload.status_code == 201, upload.text
+    node_id = upload.json()["id"]
 
     access_key, secret = _mint_key(base_url)
     client = _s3_client(base_url, access_key, secret)
@@ -150,8 +151,11 @@ def test_boto3_lists_and_downloads_identically_to_rest(base_url: str) -> None:
     assert "report.txt" in {item["Key"] for item in listing.get("Contents", [])}
 
     s3_bytes = client.get_object(Bucket="alice", Key="report.txt")["Body"].read()
-    rest_bytes = httpx.get(f"{base_url}/api/v1/nodes/{root}/content", headers=ALICE).content
-    assert s3_bytes == rest_bytes == PAYLOAD
+    # The file's own node, not the root folder: a folder has no content and the
+    # API rightly refuses that with 422.
+    rest = httpx.get(f"{base_url}/api/v1/nodes/{node_id}/content", headers=ALICE)
+    assert rest.status_code == 200, rest.text
+    assert s3_bytes == rest.content == PAYLOAD
 
 
 def test_s3_upload_is_readable_through_rest_and_back(base_url: str) -> None:
