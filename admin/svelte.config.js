@@ -22,7 +22,7 @@ const config = {
           "self",
           "http://localhost:8000",
           "http://localhost:8001",
-          "https://fs.backend.coolify.cyberdynecorp.ai",
+          "https://cyberfs.backend.coolify.cyberdynecorp.ai",
           "https://auth.backend.coolify.cyberdynecorp.ai",
         ],
         "frame-ancestors": ["none"],

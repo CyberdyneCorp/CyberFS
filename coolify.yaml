@@ -50,6 +50,11 @@ environment:
   - PUBLIC_CYBERFS_API_URL # public URL of the API (Coolify ingress)
   - PUBLIC_CYBERDYNE_AUTH_URL # public URL of CyberdyneAuth
   - PUBLIC_OAUTH_PROVIDER # default: google
+  # Cross-origin access. The dashboard is a separate origin from the API, so its
+  # origin must be listed here or every browser call from it is blocked. JSON
+  # array, e.g. ["https://cyberfs.dashboard.coolify.cyberdynecorp.ai"]. Set it as
+  # a *literal* Coolify variable so the brackets are not shell-interpolated.
+  - CORS_ALLOWED_ORIGINS # default: [] (no cross-origin access)
   # Optional overrides
   - LOG_LEVEL # default: INFO
   - DATABASE_URL # optional; defaults to the internal postgres service

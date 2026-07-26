@@ -31,6 +31,9 @@ services:
       ENVIRONMENT: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       METRICS_ENABLED: "true"
+      # The dashboard is a separate origin, so it only reaches the API if that
+      # origin is named here. JSON array -- pydantic parses the list.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-[]}
       # Internal service DNS names -- never host ports.
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://cyberfs:${POSTGRES_PASSWORD}@postgres:5432/cyberfs}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}

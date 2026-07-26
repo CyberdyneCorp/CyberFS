@@ -47,11 +47,25 @@ Create these as **Coolify secrets** (never committed):
 Set these as plain environment variables:
 
 - `CYBERDYNE_AUTH_BASE_URL` (staging CyberdyneAuth base URL)
-- `CYBERFS_CLIENT_ID` (default `cyberfs`)
+- `CYBERFS_CLIENT_ID` -- the id of a **confidential** CyberdyneAuth client with
+  the `client_credentials` grant (the API mints a service token with it to call
+  introspection; see `adapters/outbound/auth/service_token.py`). Issued ids are
+  `cyb_`-prefixed, so this is never a bare name like `cyberfs`. No redirect URIs
+  are needed: the dashboard authenticates through CyberdyneAuth's fragment-mode
+  flow rather than as a client of its own.
 - `MINIO_BUCKET` (default `cyberfs-content`)
 - `PUBLIC_CYBERFS_API_URL`, `PUBLIC_CYBERDYNE_AUTH_URL`, `PUBLIC_OAUTH_PROVIDER`
+- `CORS_ALLOWED_ORIGINS` -- JSON array naming the dashboard origin, e.g.
+  `["https://cyberfs.dashboard.coolify.cyberdynecorp.ai"]`. The dashboard is a
+  separate origin from the API; without this every browser call it makes is
+  blocked. Set it as a **literal** Coolify variable so the brackets survive.
 - Optional: `LOG_LEVEL`, `BACKUP_ENABLED` and `BACKUP_S3_ENDPOINT` /
   `BACKUP_S3_BUCKET` when enabling off-site backups.
+
+The dashboard's CSP `connect-src` is baked in at build time
+(`admin/svelte.config.js`) and must name both the API and CyberdyneAuth origins.
+Changing either public hostname requires updating that list and rebuilding the
+dashboard image -- a Coolify variable alone will not do it.
 
 `ENVIRONMENT` is pinned to `production` inside the compose file, so the master
 key placeholder and `AUTH_DEV_MODE` are both refused.
