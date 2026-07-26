@@ -42,9 +42,7 @@ def _setting(*names: str, default: str) -> str:
 
 
 def database_url() -> str:
-    return _setting(
-        "CYBERFS_TEST_DATABASE_URL", "DATABASE_URL", default=DEFAULT_TEST_DATABASE_URL
-    )
+    return _setting("CYBERFS_TEST_DATABASE_URL", "DATABASE_URL", default=DEFAULT_TEST_DATABASE_URL)
 
 
 def redis_url() -> str:

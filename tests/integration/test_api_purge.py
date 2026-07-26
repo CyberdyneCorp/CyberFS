@@ -21,6 +21,7 @@ from .conftest import build_settings
 
 pytestmark = pytest.mark.integration
 
+ADMIN = {"Authorization": "Bearer dev:root:admin"}
 ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
 PAYLOAD = b"purge-me-for-real" * 16
@@ -52,8 +53,12 @@ def upload(client: TestClient, who: dict[str, str], parent: str, name: str) -> s
 
 
 def usage(client: TestClient, who: dict[str, str]) -> dict[str, int]:
-    """The owner's byte counters, as the admin surface reports them."""
-    listing = client.get("/api/v1/admin/users", headers=who)
+    """The owner's byte counters, read through the admin surface.
+
+    Queried as an administrator, not as `who`: `/api/v1/admin/users` requires
+    admin rights, so asking as the owner is a 403.
+    """
+    listing = client.get("/api/v1/admin/users", headers=ADMIN)
     assert listing.status_code == HTTPStatus.OK, listing.text
     subject = who["Authorization"].removeprefix("Bearer dev:")
     for item in listing.json()["items"]:
