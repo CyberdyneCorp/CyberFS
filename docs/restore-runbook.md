@@ -34,6 +34,19 @@ Consequences:
 Treat losing `MASTER_KEY` as losing all encrypted content. Back the key up
 separately, under its own custody, with the same care as this database.
 
+## Prerequisite: a `pg_dump` at least as new as the server
+
+`pg_dump` refuses to dump a server newer than itself and aborts, so the client
+major in `Dockerfile.coolify` must be greater than or equal to the `postgres`
+image major in `compose.coolify.yaml`. They are pinned to 17 at both sites and
+must be bumped together.
+
+Debian bookworm ships only `postgresql-client` 15, so the image installs
+`postgresql-client-17` from PGDG. Getting this wrong fails every backup with
+`MetadataDumpError` and nothing else -- stderr is deliberately discarded to keep
+the DSN out of the logs. The `metadata_tool_failed` log line carries the client
+version for exactly this case; compare it against the server.
+
 ## Selecting a backup
 
 List available backups from the admin operations surface:

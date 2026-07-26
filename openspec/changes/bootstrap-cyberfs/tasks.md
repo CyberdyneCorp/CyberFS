@@ -160,7 +160,15 @@
 - [x] 12.5 Verify the dashboard configuration carries no Postgres, Redis, or MinIO credentials
 - [x] 12.6 Verify multi-replica operation: statelessness, migration lock under concurrent start, and correct behaviour of any replica for any request
 - [x] 12.7 Document required Coolify secrets (`MASTER_KEY`, `CYBERFS_CLIENT_SECRET`, storage credentials) and confirm none are committed
-- [ ] 12.8 Deploy to staging and run a full restore drill against it <!-- Requires live Coolify + operator; runbook at docs/deploy-staging.md -->
+- [ ] 12.8 Deploy and run a full restore drill -- BACKUP HALF DONE, RESTORE HALF OUTSTANDING.
+      Deployed to production (not staging). Backups enabled against a separate MinIO
+      (cyberspace-minio, bucket cyberfs-backups, TLS). A seeded run produced a
+      `verified` backup: dump + manifest + 87 mirrored objects off-site,
+      skew_missing_in_manifest=0, and MASTER_KEY confirmed absent from both the real
+      manifest and dump. Plain and encrypted seed files read back byte-identical.
+      STILL OUTSTANDING: the restore itself. It is destructive, so it needs a scratch
+      stack per this runbook -- restoring over production has not been attempted.
+      Also outstanding: the multi-replica drill in the same task.
 
 ## 13. Documentation and close-out
 
