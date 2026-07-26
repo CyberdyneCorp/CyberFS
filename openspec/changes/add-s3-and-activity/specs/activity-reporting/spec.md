@@ -55,6 +55,12 @@ busiest day.
 - **THEN** the response SHALL carry counts of uploads, downloads, shares granted,
   shares revoked, deletions, and restores within that window
 
+#### Scenario: Public links count toward the share totals
+
+- **WHEN** a user issues or revokes a public link
+- **THEN** it SHALL count toward shares granted or shares revoked respectively, so
+  the summary never reports zero shares while the feed lists links the user created
+
 #### Scenario: Byte totals are plaintext bytes
 
 - **WHEN** the summary reports bytes uploaded or downloaded

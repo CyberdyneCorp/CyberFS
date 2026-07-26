@@ -50,11 +50,17 @@ SECURITY_ACTIONS: frozenset[AuditAction] = frozenset(
 #: Which summary counter each action feeds. Grants are security records (they
 #: are retained), yet they still count toward the granter's "shares" totals,
 #: because the summary describes what the user *did*, not what is retained.
+#:
+#: Issuing a public link is sharing, so it counts too. Leaving it out made the
+#: summary contradict its own feed: a user who shared only by link saw
+#: `shares_granted: 0` beside a list of the links they had just created.
 SUMMARY_BUCKETS: dict[AuditAction, str] = {
     AuditAction.FILE_UPLOADED: "uploads",
     AuditAction.FILE_DOWNLOADED: "downloads",
     AuditAction.GRANT_CREATED: "shares_granted",
     AuditAction.GRANT_REVOKED: "shares_revoked",
+    AuditAction.PUBLIC_LINK_CREATED: "shares_granted",
+    AuditAction.PUBLIC_LINK_REVOKED: "shares_revoked",
     AuditAction.NODE_DELETED: "deletions",
     AuditAction.NODE_RESTORED: "restores",
     AuditAction.VERSION_RESTORED: "restores",

@@ -108,6 +108,35 @@ def test_build_rollup_counts_per_action() -> None:
     assert rollup.restores == 3  # node + version restores merge into one bucket
 
 
+def test_build_rollup_counts_public_links_as_shares() -> None:
+    """Regression: the summary used to contradict its own feed.
+
+    Public links fed no counter, so a user who shared only by link saw
+    `shares_granted: 0` next to a list of the links they had just issued.
+    """
+    counts = [
+        ActivityCount(AuditAction.PUBLIC_LINK_CREATED, NOW.date(), count=6),
+        ActivityCount(AuditAction.PUBLIC_LINK_REVOKED, NOW.date(), count=3),
+    ]
+    rollup = build_rollup(counts, window_start=NOW - timedelta(days=1), window_end=NOW)
+
+    assert rollup.shares_granted == 6
+    assert rollup.shares_revoked == 3
+
+
+def test_build_rollup_merges_grants_and_links_into_share_totals() -> None:
+    counts = [
+        ActivityCount(AuditAction.GRANT_CREATED, NOW.date(), count=2),
+        ActivityCount(AuditAction.PUBLIC_LINK_CREATED, NOW.date(), count=1),
+        ActivityCount(AuditAction.GRANT_REVOKED, NOW.date(), count=1),
+        ActivityCount(AuditAction.PUBLIC_LINK_REVOKED, NOW.date(), count=4),
+    ]
+    rollup = build_rollup(counts, window_start=NOW - timedelta(days=1), window_end=NOW)
+
+    assert rollup.shares_granted == 3
+    assert rollup.shares_revoked == 5
+
+
 def test_build_rollup_byte_totals_are_upload_and_download_only() -> None:
     counts = [
         ActivityCount(AuditAction.FILE_UPLOADED, NOW.date(), count=1, bytes=100),
