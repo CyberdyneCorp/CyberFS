@@ -150,6 +150,18 @@ def test_a_reserved_key_is_refused_as_a_set(key: str) -> None:
         validate_metadata_delta([(key, "v")], [])
 
 
+def test_an_over_long_removal_list_is_refused_in_its_own_words() -> None:
+    """The message has to describe the request, not the node.
+
+    Borrowing `validate_tags` wholesale refuses this with "a node may carry at
+    most 64 tags" -- true of a node, irrelevant to a caller deleting tags, and
+    impossible to act on when the point of the request is to make the node hold
+    fewer.
+    """
+    with pytest.raises(ValidationError, match="for removal"):
+        validate_tag_delta([], [f"tag-{i}" for i in range(MAX_TAGS_PER_NODE + 1)])
+
+
 def test_a_repeated_removal_key_is_refused() -> None:
     with pytest.raises(ValidationError, match="more than once"):
         validate_metadata_delta([], ["a", "a"])

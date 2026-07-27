@@ -114,6 +114,11 @@ CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, an
 - **WHEN** a partial update would leave a node with more tags or more metadata pairs than the permitted maximum
 - **THEN** the system SHALL refuse the request and SHALL change nothing, exactly as replacing the collection would
 
+#### Scenario: A request naming more labels than a node could hold is refused on its own terms
+
+- **WHEN** a partial update names more tags or keys in a single direction than the permitted per-node maximum
+- **THEN** the system SHALL refuse the request, and the refusal SHALL describe what the request named rather than what a node may hold, since a caller removing labels cannot act on a statement about the node's capacity
+
 #### Scenario: Two concurrent partial updates cannot jointly exceed the maximum
 
 - **WHEN** two partial updates are applied concurrently to a node near the permitted maximum, and each would fit on its own but together they would not

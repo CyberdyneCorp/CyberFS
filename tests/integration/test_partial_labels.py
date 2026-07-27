@@ -21,6 +21,7 @@ from http import HTTPStatus
 import pytest
 import redis.asyncio as aioredis
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from cyberfs.adapters.inbound.api.app import create_app
@@ -305,19 +306,60 @@ def test_a_viewer_is_refused_end_to_end(client: TestClient) -> None:
 
 
 def test_purging_still_removes_the_rows_a_patch_wrote(client: TestClient) -> None:
-    """The `node_id` cascade, which the fake models with a dict and no key."""
+    """The `node_id` cascade, which the fake models with a dict and no key.
+
+    Counted straight out of `node_tags` and `node_metadata`, because the obvious
+    proxy does not work: a tag search joins `nodes`, so once the node row is gone
+    a leftover label row could not appear in the results whether it was deleted
+    or not. Only the tables can say.
+    """
     root = root_id(client, ALICE)
     node = folder(client, ALICE, root, "doomed")
     patch_tags(client, ALICE, node, add=["cascade"])
     patch_metadata(client, ALICE, node, pairs={"source": "sap"})
 
+    def label_rows() -> tuple[int, int]:
+        async def counts(uow: SqlUnitOfWork) -> tuple[int, int]:
+            session = uow.session
+            tags = await session.execute(
+                text("SELECT count(*) FROM node_tags WHERE node_id = :id"), {"id": node}
+            )
+            pairs = await session.execute(
+                text("SELECT count(*) FROM node_metadata WHERE node_id = :id"), {"id": node}
+            )
+            return tags.scalar_one(), pairs.scalar_one()
+
+        return in_own_session(counts)
+
+    assert label_rows() == (1, 1), "the patches must have written rows to begin with"
+
     assert client.delete(f"/api/v1/nodes/{node}", headers=ALICE).status_code == HTTPStatus.OK
     purged = client.post(f"/api/v1/nodes/{node}/purge", headers=ALICE)
     assert purged.status_code == HTTPStatus.OK, purged.text
 
-    replacement = folder(client, ALICE, root, "replacement")
-    patch_tags(client, ALICE, replacement, add=["cascade"])
-    assert found(client, ALICE, tag="cascade") == {replacement}
+    assert label_rows() == (0, 0), "label rows outlived the node they describe"
+
+
+def test_a_patch_on_a_trashed_node_is_404_over_http(client: TestClient) -> None:
+    """The status the spec names, observed on the route rather than inferred.
+
+    The unit suite asserts `NotFoundError` out of the service; that it maps to 404
+    on these two new routes is a separate claim, and so is the labels being left
+    alone.
+    """
+    root = root_id(client, ALICE)
+    node = folder(client, ALICE, root, "on-its-way-out")
+    patch_tags(client, ALICE, node, add=["before"])
+    assert client.delete(f"/api/v1/nodes/{node}", headers=ALICE).status_code == HTTPStatus.OK
+
+    assert patch_tags(client, ALICE, node, add=["after"]).status_code == HTTPStatus.NOT_FOUND
+    assert (
+        patch_metadata(client, ALICE, node, pairs={"k": "v"}).status_code == HTTPStatus.NOT_FOUND
+    )
+
+    restored = client.post(f"/api/v1/nodes/{node}/restore", headers=ALICE)
+    assert restored.status_code == HTTPStatus.OK, restored.text
+    assert client.get(f"/api/v1/nodes/{node}", headers=ALICE).json()["tags"] == ["before"]
 
 
 # --- concurrency, which is the whole point ---------------------------------

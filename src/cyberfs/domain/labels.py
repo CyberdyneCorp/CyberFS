@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.nodes import (
     MAX_METADATA_PAIRS,
+    MAX_TAGS_PER_NODE,
     RESERVED_METADATA_PREFIX,
     validate_metadata,
     validate_tags,
@@ -46,10 +47,14 @@ def validate_tag_delta(add: Iterable[str], remove: Iterable[str]) -> TagDelta:
     A removal normalizes exactly as a write does, because the normalized form is
     the only form stored: `remove: ["URGENT"]` can mean nothing but `urgent`.
     Each side is bounded by the per-node maximum, since no legitimate request
-    names more tags than a node could hold.
+    names more tags than a node could hold -- but the *removal* side is told so
+    in its own words: borrowing `validate_tags` wholesale would refuse an
+    over-long removal list with "a node may carry at most 64 tags", which is a
+    statement about what a node holds rather than about what the request named,
+    and a caller deleting tags cannot act on it.
     """
     added = validate_tags(add)
-    removed = validate_tags(remove)
+    removed = _validate_removal_tags(remove)
     if not added and not removed:
         raise ValidationError("a tag update must add or remove at least one tag")
     contradictory = added & removed
@@ -149,6 +154,21 @@ def metadata_change_counts(
     """
     written = sum(1 for key, value in merged.items() if current.get(key) != value)
     return written, len(set(current) - set(merged))
+
+
+def _validate_removal_tags(tags: Iterable[str]) -> frozenset[str]:
+    """Tags named for deletion: every per-entry rule, its own cardinality message.
+
+    The per-tag rules -- normalization, emptiness, length -- are `validate_tags`'
+    and are reused unchanged. Only the collection bound is restated, because the
+    two bounds mean different things: a node may hold at most
+    `MAX_TAGS_PER_NODE` tags, and separately no honest request names more than
+    that many for deletion.
+    """
+    named = list(tags)
+    if len(named) > MAX_TAGS_PER_NODE:
+        raise ValidationError(f"a tag update may name at most {MAX_TAGS_PER_NODE} tags for removal")
+    return validate_tags(named)
 
 
 def _validate_removal_keys(keys: Iterable[str]) -> frozenset[str]:

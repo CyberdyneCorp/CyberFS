@@ -98,3 +98,6 @@ without `CYBERFS_LIVE_*` set.
 - [x] 8.4 Document the two `PATCH` methods in `README.md`: what merges, that a no-op is free, that patches to one node serialize while disjoint patches still both land, and that a replace still wins outright
 - [x] 8.5 Correct the two `PUT` route docstrings in `routers/nodes.py`, which are the OpenAPI descriptions: "Replaces every pair; an empty list clears them" is no longer true of a reserved pair, and the response omits reserved pairs
 - [x] 8.6 Run `openspec validate add-partial-label-updates --strict`
+- [x] 6.10 Purging a patched node is observed on `node_tags` and `node_metadata` directly, not through a tag search. The search joins `nodes`, so once the node row is gone a leftover label row could not appear in the results whether the cascade fired or not -- the proxy could not fail
+- [x] 6.11 A `PATCH` to a trashed node answers `404` over HTTP, on both routes, and the labels are unchanged when the node is restored. The unit suite asserts `NotFoundError` from the service; that it maps to 404 on these two new routes is a separate claim
+- [x] 6.12 An over-long removal list is refused with a message about the request rather than about the node's capacity, and a scenario in the delta says so
