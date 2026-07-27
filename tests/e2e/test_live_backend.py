@@ -481,6 +481,71 @@ def test_search_finds_a_file_by_name(api: httpx.Client, folder: str) -> None:
     assert node_id in [item["id"] for item in response.json()["items"]]
 
 
+def test_a_search_larger_than_one_page_is_walked_to_exhaustion(
+    api: httpx.Client, folder: str
+) -> None:
+    """Against the real ingress, which is where a dropped query parameter shows."""
+    term = f"paged{uuid4().hex[:8]}"
+    created = {
+        str(api.post(f"/api/v1/nodes/{folder}/folders", json={"name": f"{term}-{i}"}).json()["id"])
+        for i in range(5)
+    }
+    assert len(created) == 5
+
+    collected: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        params = {"q": term, "limit": 2} | ({"cursor": cursor} if cursor else {})
+        response = api.get("/api/v1/search", params=params)
+        assert response.status_code == 200, response.text
+        collected.extend(item["id"] for item in response.json()["items"])
+        cursor = response.json()["next_cursor"]
+        if cursor is None:
+            break
+    else:  # pragma: no cover - a cursor that never clears is a failure, not a loop
+        pytest.fail("the cursor never cleared")
+
+    assert set(collected) == created
+    assert len(collected) == len(created), "a page boundary dropped or repeated a node"
+
+    for node_id in created:
+        api.delete(f"/api/v1/nodes/{node_id}")
+        api.post(f"/api/v1/nodes/{node_id}/purge")
+
+
+def test_the_tag_inventory_agrees_with_the_paginated_tag_search(
+    api: httpx.Client, folder: str
+) -> None:
+    label = f"e2etag{uuid4().hex[:8]}"
+    created = [
+        str(api.post(f"/api/v1/nodes/{folder}/folders", json={"name": f"{label}-{i}"}).json()["id"])
+        for i in range(3)
+    ]
+    for node_id in created:
+        tagged = api.put(f"/api/v1/nodes/{node_id}/tags", json={"tags": [label]})
+        assert tagged.status_code == 200, tagged.text
+
+    inventory = api.get("/api/v1/tags", params={"prefix": label})
+    assert inventory.status_code == 200, inventory.text
+    assert [(i["tag"], i["count"]) for i in inventory.json()["items"]] == [(label, len(created))]
+
+    walked: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        params = {"tag": label, "limit": 1} | ({"cursor": cursor} if cursor else {})
+        response = api.get("/api/v1/search", params=params)
+        assert response.status_code == 200, response.text
+        walked.extend(item["id"] for item in response.json()["items"])
+        cursor = response.json()["next_cursor"]
+        if cursor is None:
+            break
+    assert sorted(walked) == sorted(created), "the count promised what the search returns"
+
+    for node_id in created:
+        api.delete(f"/api/v1/nodes/{node_id}")
+        api.post(f"/api/v1/nodes/{node_id}/purge")
+
+
 def test_activity_records_what_the_caller_did(api: httpx.Client, folder: str) -> None:
     upload(api, folder, f"audited-{uuid4().hex[:8]}.bin", os.urandom(512))
 

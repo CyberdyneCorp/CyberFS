@@ -759,7 +759,7 @@ async def test_search_matches_names(world: World) -> None:
     await add_file(uow, user, "notes.txt", user.root_folder_id)
 
     results = await svc.search(uow, user, "report", limit=10)
-    assert [n.name for n in results] == ["quarterly-report.xlsx"]
+    assert [n.name for n in results.items] == ["quarterly-report.xlsx"]
 
 
 async def test_search_requires_a_term(world: World) -> None:
@@ -775,7 +775,7 @@ async def test_search_excludes_trashed_nodes(
     node = await add_file(uow, user, "report.txt", user.root_folder_id)
     await svc.delete(uow, user, node.id, now=LATER)
 
-    assert await svc.search(uow, user, "report", limit=10) == ()
+    assert (await svc.search(uow, user, "report", limit=10)).items == ()
 
 
 # --- view ------------------------------------------------------------------

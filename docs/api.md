@@ -83,7 +83,29 @@ Source of truth for every path below:
 | POST | `/api/v1/nodes/{node_id}/copy` | Copy a node into another folder (content duplicated server-side). |
 | DELETE | `/api/v1/nodes/{node_id}` | Move to trash. |
 | POST | `/api/v1/nodes/{node_id}/restore` | Restore from trash. |
-| GET | `/api/v1/search` | Search node metadata (`q`, `limit`). |
+| GET | `/api/v1/search` | Search node metadata (`q`, `tag`, `key`, `value`, `tag_match=all\|any`, cursor-paginated: `limit`, `cursor`). |
+| GET | `/api/v1/tags` | The caller's tags with usage counts (`prefix`, `limit`, `cursor`). |
+
+Search answers with the same `NodePage` shape as a folder listing: results are
+ordered by normalized name ascending with ties broken by node identifier — not
+folders-first and not relevance-ranked — and `next_cursor` is present whenever
+further matches exist. A cursor is valid only for the filter set it was issued
+for, so changing `q`, `tag`, `tag_match`, `key`, or `value` mid-walk answers
+`422` rather than a page of a different walk. `tag_match` governs only how the
+tags combine with each other; the name and metadata filters always narrow.
+
+`/api/v1/tags` is scoped exactly like search — nodes the caller owns or holds an
+active grant on, excluding trashed ones — so its counts are **per caller and not
+a property of the tag**, and a tag with no carrier in scope does not appear at
+all rather than appearing with a count of zero.
+
+`limit` is bounded twice on both routes, and the two bounds are not the same
+thing. The route declares `1 ≤ limit ≤ 1000` — the same ceiling as
+`/children` and the admin listings — so `limit=1001` is refused with `422`
+before any query runs. Under that ceiling, a limit above the deployment's
+configured `PAGE_SIZE_MAX` is reduced to it, and the reduced page still carries
+`next_cursor` for the remainder. Either way no request can widen a page by
+asking for more.
 
 ### Content — `content.py` (claim-based)
 

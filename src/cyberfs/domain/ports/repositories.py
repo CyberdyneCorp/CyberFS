@@ -21,6 +21,7 @@ from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import FileVersion, Node
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
+from cyberfs.domain.search import SearchFilters, TagFilters, TagUsage
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.stats import TenantStatistics, UserStorage
 from cyberfs.domain.users import QuotaUsage, User
@@ -116,14 +117,37 @@ class NodeRepository(Protocol):
     async def search(
         self,
         subject: str,
+        filters: SearchFilters,
         *,
-        term: str | None = None,
-        tags: Sequence[str] = (),
-        key: str | None = None,
-        value: str | None = None,
         limit: int,
-    ) -> tuple[Node, ...]:
-        """Nodes the caller may see, narrowed by every supplied filter."""
+        after: tuple[str, str] | None = None,
+    ) -> Page[Node]:
+        """Nodes the caller may see, narrowed by every supplied filter.
+
+        Paginated on the same keyset mechanism as `list_children`, so every match
+        is reachable rather than only the first page of them.
+
+        `after` is an already-decoded `(id, normalized_name)` sort key, never a
+        raw cursor: an implementation's job is the `WHERE` and the `ORDER BY`.
+        Reading a cursor -- and refusing one issued for other filters -- belongs
+        to the use case, which is where a unit test can reach it.
+        """
+        ...
+
+    async def tag_counts(
+        self,
+        subject: str,
+        filters: TagFilters,
+        *,
+        limit: int,
+        after: str | None = None,
+    ) -> Page[TagUsage]:
+        """The tags in use across the nodes the caller may search, with counts.
+
+        Scoped exactly like `search` -- owned, or an active grant -- so a tag
+        reported with count `n` yields `n` nodes when used as a filter. `after`
+        is a decoded tag, on the same terms as `search`'s key.
+        """
         ...
 
     async def tags_for(self, node_id: uuid.UUID) -> frozenset[str]: ...

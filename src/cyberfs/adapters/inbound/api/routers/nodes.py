@@ -24,12 +24,14 @@ from cyberfs.adapters.inbound.api.schemas import (
     NodePage,
     PurgeResult,
     RenameRequest,
-    SearchResults,
+    TagPage,
     TagPatchRequest,
     TagsRequest,
 )
 from cyberfs.application.nodes import NodeService, NodeView
+from cyberfs.domain.nodes import MAX_TAG_LENGTH
 from cyberfs.domain.ports.repositories import UnitOfWork
+from cyberfs.domain.search import TagMatch
 
 router = APIRouter(prefix="/api/v1", tags=["nodes"])
 
@@ -339,24 +341,57 @@ async def restore_node(
     return _with_etag(response, await _detail(request, uow, view))
 
 
-@router.get("/search", response_model=SearchResults, summary="Search node metadata")
+@router.get("/search", response_model=NodePage, summary="Search node metadata")
 async def search(
     request: Request,
     user: CurrentUser,
     uow: UnitOfWorkDep,
     q: Annotated[str | None, Query(max_length=255)] = None,
-    tag: Annotated[list[str] | None, Query()] = None,
+    tag: Annotated[list[str] | None, Query(max_length=MAX_TAG_LENGTH)] = None,
     key: Annotated[str | None, Query(max_length=128)] = None,
     value: Annotated[str | None, Query(max_length=1024)] = None,
+    tag_match: TagMatch = TagMatch.ALL,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
-) -> SearchResults:
+    cursor: str | None = None,
+) -> NodePage:
     """Name, tags, and metadata. Content is never indexed, so never matched.
 
-    Filters narrow: repeating `tag` requires all of them, and `value` pins the
-    `key` it accompanies. At least one filter is required.
+    Filters narrow: repeating `tag` requires all of them unless `tag_match=any`,
+    and `value` pins the `key` it accompanies. At least one filter is required.
+
+    Cursor-paginated in name order, ties broken by identifier. A cursor belongs
+    to the filters it was issued for; presenting it with others is refused.
     """
-    return SearchResults.of(
-        await _service(request).search(
-            uow, user, q, tags=tag or (), key=key, value=value, limit=limit
-        )
+    page = await _service(request).search(
+        uow,
+        user,
+        q,
+        tags=tag or (),
+        key=key,
+        value=value,
+        tag_match=tag_match,
+        limit=limit,
+        cursor=cursor,
     )
+    return NodePage.of(page)
+
+
+@router.get("/tags", response_model=TagPage, summary="The caller's tags, with usage counts")
+async def list_tags(
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+    prefix: Annotated[str | None, Query(max_length=MAX_TAG_LENGTH)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    cursor: str | None = None,
+) -> TagPage:
+    """Every tag in use across the nodes the caller may search, tag order.
+
+    The counts are that caller's: they cover the nodes they own or hold an
+    active grant on, so they are not a property of the tag. `prefix` is matched
+    against the normalized tag form, for type-ahead.
+    """
+    page = await _service(request).tag_inventory(
+        uow, user, prefix=prefix, limit=limit, cursor=cursor
+    )
+    return TagPage.of(page)
