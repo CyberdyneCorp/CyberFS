@@ -63,6 +63,11 @@ class AuditAction(StrEnum):
     # it is classified as a security record and retained: a purge must stay
     # attributable long after the activity around it has been pruned.
     NODE_PURGED = "node.purged"
+    # One record per emptied trash, beside the `node.purged` record each entry
+    # produces. Absent from `ACTIVITY_ACTIONS` for the same reason and with the
+    # same force: bulk irreversible destruction must stay attributable after the
+    # surrounding activity has been pruned. Do not "fix" the omission.
+    TRASH_EMPTIED = "trash.emptied"
 
 
 class AuditProtocol(StrEnum):

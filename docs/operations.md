@@ -134,6 +134,23 @@ its last run surfaces in the operations view.
 | `orphan_reaper` (`OrphanReaper`) | Deletes stored objects no metadata row references (interrupted uploads), skipping anything younger than the grace period and anything not written by CyberFS. | `ORPHAN_GRACE_MINUTES` (default `60`) |
 | `reconcile_quotas` (`ReconcileQuotasJob`) | Recomputes each user's usage from the rows and corrects counter drift. | — |
 
+### Trash entries appearing after the upgrade that added `GET /api/v1/trash`
+
+Before the trash view landed, restoring a folder cleared `deleted_at` on that one
+row and left its descendants trashed — invisible, unrecoverable, and still
+charged to the owner's quota. Restore now lifts the whole deletion, but rows
+stranded by an *earlier* restore are still sitting there, and the new listing
+shows them. So an operator may see trash entries appear for deletions users
+thought were resolved, sometimes long ago.
+
+Nothing was created by the upgrade: these are rows that already existed and were
+already occupying quota. They are now restorable or purgeable, which is a strict
+improvement on invisible. The `reconcile_quotas` job recomputes usage from the
+rows, so the live and trashed buckets converge on what the rows actually say
+without intervention. Users who want the space back can empty their trash
+(`POST /api/v1/trash/purge`), and the retention sweep destroys anything older
+than `TRASH_RETENTION_DAYS` regardless.
+
 ### The scheduler
 
 `CronScheduler` (`src/cyberfs/infrastructure/scheduler.py`) is a generic async

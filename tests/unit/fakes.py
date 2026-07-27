@@ -23,8 +23,19 @@ from cyberfs.domain.activity import (
 from cyberfs.domain.audit import AuditProtocol, AuditRecord
 from cyberfs.domain.errors import NotFoundError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node
-from cyberfs.domain.pagination import encode_cursor, encode_keyed_cursor
+from cyberfs.domain.nodes import (
+    RESERVED_METADATA_PREFIX,
+    FileVersion,
+    Node,
+    SubtreeTotals,
+)
+from cyberfs.domain.pagination import (
+    decode_cursor,
+    decode_keyed_cursor,
+    encode_cursor,
+    encode_keyed_cursor,
+    fingerprint_of,
+)
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
 from cyberfs.domain.s3.access_key import S3AccessKey
@@ -66,6 +77,31 @@ class FakeUserRepository:
     async def list_all(self, *, limit: int, cursor: str | None = None) -> Page[User]:
         ordered = sorted(self.by_id.values(), key=lambda u: u.subject)
         return Page(items=tuple(ordered[:limit]))
+
+
+def _trash_key(node: Node) -> tuple[datetime, uuid.UUID]:
+    """The listing's sort key: deletion time, then id as the tie-break."""
+    assert node.deleted_at is not None
+    return node.deleted_at, node.id
+
+
+def _trash_fingerprint(owner_id: uuid.UUID, oldest_first: bool) -> str:
+    """What the SQL repository binds a trash cursor to, reproduced exactly.
+
+    A laxer fake here would let a cursor that the real listing refuses sail
+    through a unit test.
+    """
+    return fingerprint_of("trash", str(owner_id), "oldest" if oldest_first else "newest")
+
+
+def _trash_cursor(node: Node, fingerprint: str) -> str:
+    stamp, node_id = _trash_key(node)
+    return encode_cursor(encode_keyed_cursor(fingerprint, stamp.isoformat(), str(node_id)))
+
+
+def _trash_edge(cursor: str, fingerprint: str) -> tuple[datetime, uuid.UUID]:
+    stamp, node_id = decode_keyed_cursor(decode_cursor(cursor), fingerprint=fingerprint, fields=2)
+    return datetime.fromisoformat(stamp), uuid.UUID(node_id)
 
 
 class FakeNodeRepository:
@@ -168,6 +204,76 @@ class FakeNodeRepository:
         for target in cleared:
             target.restore(now)
         return tuple(cleared)
+
+    def _trash_entries(self, owner_id: uuid.UUID) -> list[Node]:
+        """Trashed nodes of one owner that have a parent, and a live one.
+
+        The collapse rule, kept faithful to the SQL `WHERE` clause: a unit test
+        that passed here because the fake listed every trashed row would prove
+        nothing about the listing users actually get. A root has no parent and is
+        excluded for that reason, exactly as the SQL excludes it.
+        """
+        entries = []
+        for node in self.by_id.values():
+            if node.owner_id != owner_id or not node.is_deleted or node.parent_id is None:
+                continue
+            parent = self.by_id.get(node.parent_id)
+            if parent is not None and parent.is_deleted:
+                continue
+            entries.append(node)
+        return entries
+
+    async def list_trash_entries(
+        self,
+        owner_id: uuid.UUID,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        oldest_first: bool = False,
+    ) -> Page[Node]:
+        fingerprint = _trash_fingerprint(owner_id, oldest_first)
+        ordered = sorted(self._trash_entries(owner_id), key=_trash_key, reverse=not oldest_first)
+        if cursor is not None:
+            edge = _trash_edge(cursor, fingerprint)
+            ordered = [
+                n
+                for n in ordered
+                if (_trash_key(n) > edge if oldest_first else _trash_key(n) < edge)
+            ]
+        has_more = len(ordered) > limit
+        visible = ordered[:limit]
+        return Page(
+            items=tuple(visible),
+            next_cursor=(_trash_cursor(visible[-1], fingerprint) if has_more and visible else None),
+        )
+
+    async def count_trash_entries(self, owner_id: uuid.UUID) -> int:
+        return len(self._trash_entries(owner_id))
+
+    async def delete_batch_totals(
+        self, node_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, SubtreeTotals]:
+        totals: dict[uuid.UUID, SubtreeTotals] = {}
+        for node_id in node_ids:
+            node = self.by_id.get(node_id)
+            # A live node has no delete batch, so it is absent rather than zero --
+            # the SQL aggregate drops it for the same reason (NULL = NULL).
+            if node is None or node.deleted_at is None:
+                continue
+            # The same batch rule `restore_subtree` uses, so the reported total
+            # is what a restore would actually lift.
+            subtree = await self.descendants(node_id, max_depth=512, include_deleted=True)
+            members = [node, *(n for n in subtree if n.deleted_at == node.deleted_at)]
+            totals[node_id] = SubtreeTotals(
+                size_bytes=sum(n.size_bytes for n in members if n.is_file),
+                nodes=len(members),
+            )
+        return totals
+
+    async def ancestor_chains(
+        self, node_ids: Sequence[uuid.UUID], *, max_depth: int
+    ) -> dict[uuid.UUID, tuple[Node, ...]]:
+        return {node_id: await self.ancestors(node_id, max_depth=max_depth) for node_id in node_ids}
 
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]:
         trashed = [

@@ -364,6 +364,99 @@ def test_purging_an_unknown_node_is_not_found(api: httpx.Client) -> None:
     assert api.post(f"/api/v1/nodes/{uuid4()}/purge").status_code == 404
 
 
+# --- trash ------------------------------------------------------------------
+#
+# The success path of `POST /api/v1/trash/purge` is deliberately NOT exercised
+# here. This tier runs against a real account whose trash may hold data no test
+# created and no test can put back; emptying it would destroy that data, and the
+# count guard turns any concurrent deletion into a `409` that fails the session.
+# Only the guard's refusal is asserted, which destroys nothing. Whole-trash
+# emptying is proven in `tests/integration/test_api_trash.py`, where the database
+# is disposable. Every cleanup below is `POST /api/v1/nodes/{id}/purge` on an id
+# this test created.
+
+
+def find_entry(api: httpx.Client, node_id: str) -> dict:
+    """The caller's trash entry for `node_id`, following the cursor if needed.
+
+    A deployed account may hold trash this suite did not create, so the entry is
+    searched for rather than assumed to head the first page.
+    """
+    cursor: str | None = None
+    for _ in range(20):
+        params = {"limit": 100} if cursor is None else {"limit": 100, "cursor": cursor}
+        page = api.get("/api/v1/trash", params=params)
+        assert page.status_code == 200, page.text
+        body = page.json()
+        for item in body["items"]:
+            if item["id"] == node_id:
+                return dict(item)
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+    raise AssertionError(f"no trash entry for {node_id}")
+
+
+def test_a_deleted_file_is_found_in_the_trash_and_restored(api: httpx.Client, folder: str) -> None:
+    """The loop the deployment could not previously complete.
+
+    Nothing but the assertion remembers the id across the delete: the restore is
+    driven by what `GET /api/v1/trash` returned.
+    """
+    body = os.urandom(4096)
+    node_id = upload(api, folder, "findable.bin", body)["id"]
+    assert api.delete(f"/api/v1/nodes/{node_id}").status_code in (200, 204)
+
+    entry = find_entry(api, str(node_id))
+    assert entry["name"] == "findable.bin"
+    assert entry["size_bytes"] == len(body)
+    assert entry["node_count"] == 1
+    assert entry["purge_after"] > entry["deleted_at"]
+
+    restored = api.post(f"/api/v1/nodes/{entry['id']}/restore")
+    assert restored.status_code in (200, 201), restored.text
+    assert api.get(f"/api/v1/nodes/{node_id}/content").content == body
+
+    # Leave nothing behind: trash it again and destroy it outright.
+    api.delete(f"/api/v1/nodes/{node_id}")
+    assert api.post(f"/api/v1/nodes/{node_id}/purge").status_code == 200
+
+
+def test_a_deleted_tree_is_one_entry_and_a_stale_count_destroys_nothing(
+    api: httpx.Client, scratch: str
+) -> None:
+    """One entry for the whole tree, and a wrong count refuses the operation.
+
+    Only the refusal, never the success: a stated count of 10,000 cannot match any
+    real trash, so this exercises the guard while destroying nothing. Cleanup is by
+    id. Replacing that with an empty-trash call would destroy unrelated trash in a
+    live account and make teardown depend on the feature under test.
+    """
+    outer = api.post(
+        f"/api/v1/nodes/{scratch}/folders", json={"name": f"trash-tree-{uuid4().hex[:8]}"}
+    ).json()["id"]
+    inner = api.post(f"/api/v1/nodes/{outer}/folders", json={"name": "inner"}).json()["id"]
+    body = os.urandom(4096)
+    upload(api, inner, "deep.bin", body)
+    assert api.delete(f"/api/v1/nodes/{outer}").status_code in (200, 204)
+
+    listing = api.get("/api/v1/trash", params={"limit": 100})
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["total_entries"] >= 1
+    entry = find_entry(api, str(outer))
+    assert entry["node_count"] == 3, entry
+    assert entry["size_bytes"] == len(body), entry
+
+    refused = api.post("/api/v1/trash/purge", json={"expected_entries": 10_000})
+    assert refused.status_code == 409, refused.text
+    assert refused.json().get("code") == "trash_count_mismatch", refused.text
+    assert find_entry(api, str(outer))["id"] == str(outer), "the trash was touched anyway"
+
+    # Destroy exactly what this test created, by id, and nothing else.
+    assert api.post(f"/api/v1/nodes/{outer}/purge").status_code == 200
+    assert api.get(f"/api/v1/nodes/{inner}").status_code == 404
+
+
 # --- labels -----------------------------------------------------------------
 
 

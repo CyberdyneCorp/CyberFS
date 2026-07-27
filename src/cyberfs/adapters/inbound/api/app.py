@@ -46,6 +46,7 @@ from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
 from cyberfs.adapters.inbound.api.routers import s3 as s3_router
 from cyberfs.adapters.inbound.api.routers import s3_keys as s3_keys_router
 from cyberfs.adapters.inbound.api.routers import shares as shares_router
+from cyberfs.adapters.inbound.api.routers import trash as trash_router
 from cyberfs.adapters.inbound.api.routers import webdav as webdav_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.activity import ActivityService
@@ -169,6 +170,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.nodes = NodeService(
         max_tree_depth=settings.max_tree_depth,
         page_size_max=settings.page_size_max,
+        # The retention window the trash listing reports a deadline from.
+        trash_retention_days=settings.trash_retention_days,
         cache=app.state.cache,
     )
     app.state.objects = build_object_store(settings)
@@ -258,6 +261,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(nodes_router.router)
     app.include_router(content_router.router)
     app.include_router(shares_router.router)
+    app.include_router(trash_router.router)
     app.include_router(me_router.router)
     app.include_router(s3_keys_router.router)
     app.include_router(admin_router.router)

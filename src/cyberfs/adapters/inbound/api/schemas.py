@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cyberfs.application.nodes import NodeView
+from cyberfs.application.nodes import Emptied, NodeView, TrashListing
 from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.backup import BackupRecord, is_stale
@@ -24,6 +24,7 @@ from cyberfs.domain.nodes import (
     FileVersion,
     Node,
     NodeKind,
+    TrashEntry,
 )
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
@@ -253,6 +254,101 @@ class PurgeResult(BaseModel):
     #: Bytes released from the owner's quota. Unlike a soft delete, these are
     #: actually freed rather than moved between buckets.
     bytes_reclaimed: int
+
+
+class TrashEntrySummary(BaseModel):
+    """One deletion, as the trash listing presents it.
+
+    Metadata about a node, never a handle on its content: no digest and no object
+    key. Nor an `ETag` -- restore takes no precondition, so a revision here would
+    be a field with no consumer. The bytes and the node count describe the whole
+    deletion rather than the entry's own row, because a folder's own size is zero
+    and that is the number a caller needs in order to choose between restoring and
+    purging. `size_bytes` counts current-version content only, matching the
+    trashed quota bucket the delete moved.
+    """
+
+    id: uuid.UUID
+    kind: NodeKind
+    name: str
+    #: The path the node occupied, and returns to when restored.
+    path: str
+    deleted_at: datetime
+    #: When the retention sweep destroys it, derived from `TRASH_RETENTION_DAYS`.
+    purge_after: datetime
+    #: Current-version content bytes restoring this entry would bring back.
+    size_bytes: int
+    #: How many nodes it would bring back, the entry itself included.
+    node_count: int
+
+    @classmethod
+    def of(cls, entry: TrashEntry) -> TrashEntrySummary:
+        return cls(
+            id=entry.node.id,
+            kind=entry.node.kind,
+            name=entry.node.name,
+            path=entry.path,
+            deleted_at=entry.deleted_at,
+            purge_after=entry.purge_after,
+            size_bytes=entry.totals.size_bytes,
+            node_count=entry.totals.nodes,
+        )
+
+
+class TrashPage(BaseModel):
+    items: list[TrashEntrySummary]
+    next_cursor: str | None = None
+    #: Entries in the whole trash, not on this page. The number
+    #: `POST /api/v1/trash/purge` requires, reported here so obtaining it costs
+    #: one request rather than a walk of every page.
+    total_entries: int
+
+    @classmethod
+    def of(cls, listing: TrashListing) -> TrashPage:
+        return cls(
+            items=[TrashEntrySummary.of(entry) for entry in listing.entries],
+            next_cursor=listing.next_cursor,
+            total_entries=listing.total_entries,
+        )
+
+
+class EmptyTrashRequest(BaseModel):
+    """How many entries the caller intends to destroy.
+
+    Required and checked against the trash as it stands, so an irreversible bulk
+    operation cannot be issued by a client that has not looked at what it is
+    destroying: the count can only be right if the trash was listed, and it goes
+    stale exactly when something changed underneath.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_entries: int = Field(ge=0)
+
+
+class EmptyTrashResult(BaseModel):
+    """What emptying the trash destroyed, and what is left to destroy."""
+
+    #: Entries destroyed by this call, each with its whole subtree.
+    entries_purged: int
+    nodes_destroyed: int
+    objects_deleted: int
+    #: Bytes actually freed, not moved between quota buckets.
+    bytes_reclaimed: int
+    #: Entries still in the trash: one call destroys at most
+    #: `TRASH_PURGE_NODE_BUDGET` nodes, so a client loops until this reaches zero
+    #: rather than assuming it finished. It is also the count the next call states.
+    entries_remaining: int
+
+    @classmethod
+    def of(cls, emptied: Emptied) -> EmptyTrashResult:
+        return cls(
+            entries_purged=emptied.entries_purged,
+            nodes_destroyed=emptied.purged.nodes_deleted,
+            objects_deleted=emptied.purged.objects_deleted,
+            bytes_reclaimed=emptied.purged.bytes_reclaimed,
+            entries_remaining=emptied.entries_remaining,
+        )
 
 
 class VersionSummary(BaseModel):

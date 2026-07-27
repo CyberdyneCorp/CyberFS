@@ -11,6 +11,12 @@ Highlights:
 - **Hierarchical filesystem** — folders, files, rename/move, trash with
   retention, on-demand purge, content versioning, and metadata search
   (`/api/v1/nodes`, `/api/v1/search`).
+- **Trash you can actually browse** — `GET /api/v1/trash` lists the caller's own
+  deletions, one entry per deletion rather than one per affected node, each
+  carrying its original path, its retention deadline, and the bytes and node
+  count restoring it would bring back. Restoring an entry brings back the whole
+  subtree that deletion removed. `POST /api/v1/trash/purge` empties the trash in
+  bounded, count-confirmed steps. See [the API guide](docs/api.md#trash--trashpy-claim-based).
 - **Tags and metadata** — a label set and key/value pairs on any node, searchable
   alongside the name (`PUT /api/v1/nodes/{id}/tags`,
   `PUT /api/v1/nodes/{id}/metadata`). Both replace wholesale rather than merging,
@@ -173,8 +179,11 @@ rather than failing later. Every setting appears in
   `ENCRYPTION_DEFAULT_ON`, `ENCRYPTION_FRAME_BYTES`, `ASYNC_REWRAP_THRESHOLD_NODES`
 - **Filesystem** — quotas, upload limits, tree depth, pagination, version and
   trash retention. `TRASH_RETENTION_DAYS` bounds how long trash survives on its
-  own; `POST /api/v1/nodes/{id}/purge` destroys a **trashed** node sooner and
-  frees its quota in the same request. Purge is irreversible: it refuses a live
+  own and is what `GET /api/v1/trash` reports each entry's deadline from;
+  `POST /api/v1/nodes/{id}/purge` destroys a **trashed** node sooner and
+  frees its quota in the same request, and `POST /api/v1/trash/purge` does the
+  same for a whole trash, bounded by `PAGE_SIZE_MAX` per call and refused with
+  `409` unless the caller states the number of entries the trash actually holds. Purge is irreversible: it refuses a live
   node with `409` so losing content takes two deliberate steps, and what a
   backup taken beforehand still holds is governed by
   [the restore runbook](docs/restore-runbook.md) rather than guaranteed here.

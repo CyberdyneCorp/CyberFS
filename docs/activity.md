@@ -29,6 +29,21 @@ Every file operation writes one immutable `AuditRecord`
 | `version.restored` | an older version is restored |
 | `public_link.accessed` | content is fetched through a public link |
 
+Two destructive actions are deliberately **absent** from that table, and
+therefore land in the derived `SECURITY_ACTIONS` complement, which the prune job
+never touches:
+
+| Action | When | Retention |
+|---|---|---|
+| `node.purged` | a trashed node is destroyed permanently | retained as a security record |
+| `trash.emptied` | a whole trash is emptied in one call, with its entry count and reclaimed bytes | retained as a security record |
+
+Irreversible destruction must stay attributable long after the activity around it
+has aged out, so neither is activity and neither is pruned. `trash.emptied`
+carries no node id — the batch is not a node, and the per-entry `node.purged`
+records already name every one of them — and it feeds no summary counter, because
+counting the batch as well would double-count the rollup.
+
 Each record carries the acting subject, the target node id, the operation, the
 protocol it arrived through, the time, and — for uploads and downloads — the
 **plaintext** byte count in `context["bytes"]`. Byte totals reported by the

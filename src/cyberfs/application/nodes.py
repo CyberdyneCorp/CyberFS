@@ -24,6 +24,7 @@ from cyberfs.domain.errors import (
     NameTakenError,
     NotFoundError,
     PreconditionFailedError,
+    TrashCountMismatchError,
     ValidationError,
     WouldCreateCycleError,
 )
@@ -39,10 +40,13 @@ from cyberfs.domain.labels import (
 )
 from cyberfs.domain.nodes import (
     MAX_METADATA_PAIRS,
+    TRASH_PURGE_NODE_BUDGET,
     EncryptionDefault,
     Node,
     NodeKind,
     NodePath,
+    SubtreeTotals,
+    TrashEntry,
     normalize_name,
     validate_metadata,
     validate_name,
@@ -76,16 +80,51 @@ class NodeView:
         return self.node.etag
 
 
+@dataclass(frozen=True, slots=True)
+class TrashListing:
+    """A page of the caller's trash, plus how many entries it holds in total.
+
+    The total travels with the page because it is the input to the empty-trash
+    guard, not a UI nicety: obtaining it from a second endpoint would let the two
+    numbers disagree, and paginating a thousand-entry trash to derive it would
+    make a guard nobody can satisfy on a first call.
+    """
+
+    entries: tuple[TrashEntry, ...]
+    next_cursor: str | None
+    total_entries: int
+
+
+@dataclass(frozen=True, slots=True)
+class Emptied:
+    """What one bounded pass over the trash destroyed, and what it left behind.
+
+    `entries_remaining` is read back after the destruction rather than subtracted
+    from the count that was confirmed, so a client looping on it is following the
+    trash as it actually stands.
+    """
+
+    entries_purged: int
+    entries_remaining: int
+    purged: Purged
+
+
 class NodeService:
     def __init__(
         self,
         *,
         max_tree_depth: int,
         page_size_max: int,
+        # Only the trash deadline reads this, so it carries the same default as
+        # `Settings.trash_retention_days` rather than being restated at the many
+        # construction sites that never touch the trash. `create_app` always
+        # passes the configured value, and a test pins that it does.
+        trash_retention_days: int = 30,
         cache: CacheService | None = None,
     ) -> None:
         self._max_depth = max_tree_depth
         self._page_size_max = page_size_max
+        self._retention_days = trash_retention_days
         self._cache = cache
 
     # --- permission ----------------------------------------------------
@@ -660,7 +699,7 @@ class NodeService:
         await self._move_bytes(uow, node.owner_id, restored, moment, to_trash=False)
         await uow.flush()
         await self._audit(uow, user, node, AuditAction.NODE_RESTORED, moment)
-        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
+        await self._invalidate_subtree(node, cleared)
         return await self._view(uow, node, Role.OWNER)
 
     async def purge(
@@ -704,19 +743,187 @@ class NodeService:
         # `NodeRow.parent_id` cascades, so deleting rows during the walk would
         # let a descendant's row vanish before its object key had been used --
         # stranding the object in the store and undercounting the quota freed.
-        subtree = await uow.nodes.descendants(
-            node.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
+        total = await self._destroy_entry(uow, objects, node, moment)
+        await uow.flush()
+        await self._record_purge(uow, user, node, total, moment)
+        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
+        return total
+
+    # --- the trash -----------------------------------------------------
+
+    async def trash(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        *,
+        limit: int,
+        cursor: str | None = None,
+    ) -> TrashListing:
+        """The caller's own trash, most recently deleted first.
+
+        Owner-scoped through the repository's signature: a soft delete withdraws
+        every grant, so there is no caller other than the owner for whom an entry
+        could exist, and no parameter by which another user's trash could be
+        asked for.
+
+        Not cached. Invalidating a trash listing would mean reacting to every
+        delete, restore, and purge anywhere in the caller's tree, and a stale
+        trash fails in both available directions: an entry that is missing cannot
+        be restored, and one that is already gone `404`s when the user clicks it.
+        """
+        page = await uow.nodes.list_trash_entries(
+            user.id, limit=min(limit, self._page_size_max), cursor=cursor
         )
-        total = await purge_subtree(
-            uow, objects, [*(d.id for d in subtree), node.id], node.id, moment
+        ids = [node.id for node in page.items]
+        # Two page-wide queries rather than two per entry. A folder's own
+        # `size_bytes` is zero, and "0 bytes" beside every deleted folder
+        # withholds the single number the user needs in order to choose between
+        # restoring and purging; the path needs the live ancestors above it.
+        totals = await uow.nodes.delete_batch_totals(ids)
+        chains = await uow.nodes.ancestor_chains(ids, max_depth=ANCESTOR_GUARD_DEPTH)
+        entries = tuple(
+            TrashEntry.of(
+                node,
+                chains.get(node.id, ()),
+                retention_days=self._retention_days,
+                totals=totals.get(node.id, SubtreeTotals()),
+            )
+            for node in page.items
+        )
+        return TrashListing(
+            entries=entries,
+            next_cursor=page.next_cursor,
+            total_entries=await uow.nodes.count_trash_entries(user.id),
         )
 
+    async def empty_trash(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        *,
+        expected_entries: int,
+        objects: ObjectStore,
+        now: datetime | None = None,
+    ) -> Emptied:
+        """Destroy the caller's own trash entries. Irreversible.
+
+        Guarded by the count the caller states: a trash holding a different
+        number is refused and nothing is destroyed. A `confirm` flag would be a
+        constant no client could get wrong, which is exactly why it would be no
+        evidence that the caller looked; the count can only be right if they
+        listed the trash, and it goes stale the moment something changes.
+
+        The count and the destruction share one unit of work, so a node trashed
+        concurrently either lands before the count -- and is destroyed -- or after
+        the commit, and is reported as remaining. Never half of either.
+        """
+        moment = now or utcnow()
+        held = await uow.nodes.count_trash_entries(user.id)
+        if held != expected_entries:
+            raise TrashCountMismatchError(
+                "the trash does not hold the stated number of entries; list it again",
+                expected_entries=expected_entries,
+                entries=held,
+            )
+
+        destroyed, total = await self._spend_purge_budget(uow, user, objects, moment)
         await uow.flush()
+        remaining = await uow.nodes.count_trash_entries(user.id)
+        if destroyed:
+            # A no-op call writes no record. `TRASH_EMPTIED` is deliberately
+            # outside `ACTIVITY_ACTIONS`, so nothing ever prunes it -- emitting
+            # one per request would let any authenticated client grow the
+            # permanently retained security log with rows describing nothing.
+            await self._record_batch(uow, user, moment, entries=len(destroyed), purged=total)
+        await self._invalidate_destroyed(destroyed)
+        return Emptied(entries_purged=len(destroyed), entries_remaining=remaining, purged=total)
+
+    async def _spend_purge_budget(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        objects: ObjectStore,
+        now: datetime,
+    ) -> tuple[list[Node], Purged]:
+        """Destroy whole entries, oldest first, up to `TRASH_PURGE_NODE_BUDGET`.
+
+        The budget counts NODES, because an entry is the root of a subtree of
+        unbounded size and bounding entries would bound nothing. An entry whose
+        node count would push the call past the budget is not *started*: a
+        half-destroyed entry would still list, with a subtree no longer matching
+        its reported totals, which is worse than one not yet touched.
+
+        One exception, or the loop never terminates: with nothing destroyed yet
+        the oldest entry goes however large it is. Otherwise a trash whose oldest
+        entry exceeds the budget could never be emptied by any sequence of calls.
+        That leaves a single deep subtree costing exactly what
+        `POST /nodes/{id}/purge` already costs for it.
+        """
+        # Every entry costs at least its own row, so no call can destroy more
+        # entries than the node budget allows -- which is what bounds this read.
+        page = await uow.nodes.list_trash_entries(
+            user.id, limit=TRASH_PURGE_NODE_BUDGET, oldest_first=True
+        )
+        totals = await uow.nodes.delete_batch_totals([node.id for node in page.items])
+        destroyed: list[Node] = []
+        total = Purged()
+        spent = 0
+        for entry in page.items:
+            cost = totals[entry.id].nodes
+            if destroyed and spent + cost > TRASH_PURGE_NODE_BUDGET:
+                break
+            purged = await self._destroy_entry(uow, objects, entry, now)
+            # One record per entry, identical in shape to what an individual
+            # purge of it writes -- not one per node, which would flood the
+            # never-pruned security log with rows naming descendants no user
+            # ever addressed.
+            await self._record_purge(uow, user, entry, purged, now)
+            destroyed.append(entry)
+            spent += cost
+            total += purged
+        return destroyed, total
+
+    async def _destroy_entry(
+        self,
+        uow: UnitOfWork,
+        objects: ObjectStore,
+        entry: Node,
+        now: datetime,
+    ) -> Purged:
+        """One trashed node and its subtree, destroyed. Shared by both purges.
+
+        `purge_subtree` owns the order -- every node stripped of its objects
+        before any row goes, because `NodeRow.parent_id` cascades and would take a
+        descendant's row before its object key had been used. Re-deriving that
+        sequence per caller is how a stranded object or a quota leak arrives.
+        """
+        subtree = await uow.nodes.descendants(
+            entry.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
+        )
+        return await purge_subtree(
+            uow, objects, [*(d.id for d in subtree), entry.id], entry.id, now
+        )
+
+    @staticmethod
+    async def _record_purge(
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        purged: Purged,
+        now: datetime,
+    ) -> None:
+        """The one `NODE_PURGED` emitter, shared by `purge` and `empty_trash`.
+
+        `purge_one` and `purge_subtree` emit nothing, deliberately: their other
+        caller is the retention sweep, which has no actor to attribute. So the
+        record is written here, and written once -- two emitters would let the
+        granularity of a purge's audit trail depend on which route reached it.
+        """
         await emit_audit(
             uow,
             AuditRecord(
                 action=AuditAction.NODE_PURGED,
-                occurred_at=moment,
+                occurred_at=now,
                 actor_subject=user.subject,
                 target_id=str(node.id),
                 context={
@@ -724,14 +931,50 @@ class NodeService:
                     # Named separately so an administrator's purge of someone
                     # else's node stays attributable to both parties.
                     "owner_id": str(node.owner_id),
-                    "nodes": total.nodes_deleted,
-                    "objects": total.objects_deleted,
-                    "bytes": total.bytes_reclaimed,
+                    "nodes": purged.nodes_deleted,
+                    "objects": purged.objects_deleted,
+                    "bytes": purged.bytes_reclaimed,
                 },
             ),
         )
-        await self._invalidate(node.id, old_parent=node.parent_id, reparented=True)
-        return total
+
+    @staticmethod
+    async def _record_batch(
+        uow: UnitOfWork,
+        user: User,
+        now: datetime,
+        *,
+        entries: int,
+        purged: Purged,
+    ) -> None:
+        """One record naming the batch, so a sudden drop in usage is explained.
+
+        Carries no node identifier: the batch is not a node, and the per-entry
+        `node.purged` records already name every one of them.
+        """
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=AuditAction.TRASH_EMPTIED,
+                occurred_at=now,
+                actor_subject=user.subject,
+                context={
+                    "entries": entries,
+                    "nodes": purged.nodes_deleted,
+                    "objects": purged.objects_deleted,
+                    "bytes": purged.bytes_reclaimed,
+                },
+            ),
+        )
+
+    async def _invalidate_destroyed(self, entries: Sequence[Node]) -> None:
+        """Drop what the destruction made stale, before the response."""
+        if self._cache is None or not entries:
+            return
+        for entry in entries:
+            await self._cache.on_node_mutated(entry.id, old_parent=entry.parent_id)
+        # The subtrees are gone, so every decision inherited over them is void.
+        await self._cache.invalidate_all_permissions()
 
     async def copy(
         self,
@@ -890,6 +1133,24 @@ class NodeService:
         if reparented:
             # Inherited access moved with the subtree.
             await self._cache.invalidate_all_permissions()
+
+    async def _invalidate_subtree(self, entry: Node, lifted: Sequence[Node]) -> None:
+        """A subtree mutation, so every row it touched is dropped, not just the root.
+
+        `caching/spec.md` "Invalidation on mutation" requires a subtree mutation to
+        drop the cached decisions and listings of descendants too, and a restore
+        mutates every row it lifts. `_invalidate` alone would drop the entry's node
+        key and its *parent's* listing prefix while leaving the descendants' node
+        keys and the entry's own children listing behind. Nothing populates those
+        datasets on read today, which is exactly why this is fixed now rather than
+        when a read path starts trusting them.
+        """
+        await self._invalidate(entry.id, old_parent=entry.parent_id, reparented=True)
+        if self._cache is None:
+            return
+        for node in lifted:
+            await self._cache.invalidate_node(node.id)
+        await self._cache.invalidate_listing(entry.id)
 
     # --- guards --------------------------------------------------------
 
