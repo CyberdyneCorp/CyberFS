@@ -17,6 +17,7 @@ from cyberfs.adapters.inbound.api.schemas import (
     CopyRequest,
     CreateFolderRequest,
     DeleteResult,
+    MetadataPatchRequest,
     MetadataRequest,
     MoveRequest,
     NodeDetail,
@@ -24,6 +25,7 @@ from cyberfs.adapters.inbound.api.schemas import (
     PurgeResult,
     RenameRequest,
     SearchResults,
+    TagPatchRequest,
     TagsRequest,
 )
 from cyberfs.application.nodes import NodeService, NodeView
@@ -230,7 +232,10 @@ async def replace_tags(
     response: Response,
     if_match: IfMatch = None,
 ) -> NodeDetail:
-    """Replaces the whole set; an empty list clears it."""
+    """Replaces the whole set; an empty list clears it.
+
+    Use `PATCH` to add or remove individual tags without restating the rest.
+    """
     view, _ = await _service(request).replace_tags(uow, user, node_id, body.tags, if_match=if_match)
     await uow.commit()
     return _with_etag(response, await _detail(request, uow, view))
@@ -250,12 +255,71 @@ async def replace_metadata(
     response: Response,
     if_match: IfMatch = None,
 ) -> NodeDetail:
-    """Replaces every pair; an empty list clears them."""
+    """Replaces every pair a caller may write; an empty list clears them.
+
+    Pairs in the `cyberfs.` namespace reserved for system use are outside that:
+    they survive the replace and do not appear in the response, so what comes back
+    is exactly what may be written again. Use `PATCH` to set or delete individual
+    keys.
+    """
     view, _ = await _service(request).replace_metadata(
         uow,
         user,
         node_id,
         [(pair.key, pair.value) for pair in body.metadata],
+        if_match=if_match,
+    )
+    await uow.commit()
+    return _with_etag(response, await _detail(request, uow, view))
+
+
+@router.patch(
+    "/nodes/{node_id}/tags",
+    response_model=NodeDetail,
+    summary="Add and remove individual tags",
+)
+async def patch_tags(
+    node_id: uuid.UUID,
+    body: TagPatchRequest,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+    response: Response,
+    if_match: IfMatch = None,
+) -> NodeDetail:
+    """Merges: tags the request does not name are left alone.
+
+    A delta that turns out to change nothing is a success that writes nothing --
+    same body, same ETag. Naming the same tag in both directions is refused.
+    """
+    view, _ = await _service(request).patch_tags(
+        uow, user, node_id, add=body.add, remove=body.remove, if_match=if_match
+    )
+    await uow.commit()
+    return _with_etag(response, await _detail(request, uow, view))
+
+
+@router.patch(
+    "/nodes/{node_id}/metadata",
+    response_model=NodeDetail,
+    summary="Set and delete individual metadata keys",
+)
+async def patch_metadata(
+    node_id: uuid.UUID,
+    body: MetadataPatchRequest,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+    response: Response,
+    if_match: IfMatch = None,
+) -> NodeDetail:
+    """Merges: keys the request does not name keep their values byte for byte."""
+    view, _ = await _service(request).patch_metadata(
+        uow,
+        user,
+        node_id,
+        pairs=[(pair.key, pair.value) for pair in body.set],
+        remove=body.remove,
         if_match=if_match,
     )
     await uow.commit()

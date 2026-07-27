@@ -27,6 +27,15 @@ from cyberfs.domain.errors import (
     ValidationError,
     WouldCreateCycleError,
 )
+from cyberfs.domain.labels import (
+    merge_metadata,
+    merge_tags,
+    metadata_change_counts,
+    tag_change_counts,
+    validate_metadata_delta,
+    validate_tag_delta,
+    visible_metadata,
+)
 from cyberfs.domain.nodes import (
     EncryptionDefault,
     Node,
@@ -223,11 +232,148 @@ class NodeService:
         await self._invalidate(node.id, old_parent=node.parent_id)
         return await self._view(uow, node, role), validated
 
+    async def patch_tags(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        *,
+        add: Iterable[str] = (),
+        remove: Iterable[str] = (),
+        if_match: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[NodeView, frozenset[str]]:
+        """Merge a tag delta into what the node already carries. Requires `EDITOR`.
+
+        Unlike `replace_tags`, this states a change rather than a collection: no
+        statement touches a tag the request did not name, so a patch cannot
+        clobber a label it never saw.
+        """
+        moment = now or utcnow()
+        # First, before the node is read. The per-node maximum and the "changed
+        # nothing" judgement are both decided from the current collection, and an
+        # unserialized read of it is the lost update the row-level writes below
+        # otherwise avoid.
+        await uow.lock_subtree(node_id)
+
+        node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
+        # Before the effect is computed. A stale token says the caller's view of
+        # the node is out of date, which is true whether or not the delta would
+        # have changed anything.
+        _ensure_precondition(node, if_match)
+        delta = validate_tag_delta(add, remove)
+
+        current = await uow.nodes.tags_for(node.id)
+        merged = merge_tags(current, delta)
+        if merged == current:
+            # A patch that changes nothing writes nothing: bumping the revision
+            # would invalidate every other client's ETag for a change none of
+            # them can observe.
+            return await self._view(uow, node, role), current
+
+        # The delta as the caller named it, not the difference from what was
+        # read: a writer that does not hold this lock -- a `PUT`, or any label
+        # writer added later -- must not lose rows to a patch that never named
+        # them.
+        await uow.nodes.add_tags(node.id, delta.added)
+        await uow.nodes.remove_tags(node.id, delta.removed)
+        added, removed = tag_change_counts(current, merged)
+        await self._apply_label_change(
+            uow, user, node, AuditAction.NODE_TAGS_CHANGED, moment, added=added, removed=removed
+        )
+        return await self._view(uow, node, role), merged
+
+    async def patch_metadata(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        *,
+        pairs: Sequence[tuple[str, str]] = (),
+        remove: Iterable[str] = (),
+        if_match: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[NodeView, dict[str, str]]:
+        """Set and delete individual metadata keys. Requires `EDITOR`.
+
+        Every key the request does not name is left byte-identical, including
+        anything in the reserved namespace -- which a removal may not name at all,
+        and which the returned mapping does not show.
+        """
+        moment = now or utcnow()
+        await uow.lock_subtree(node_id)
+
+        node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
+        _ensure_precondition(node, if_match)
+        delta = validate_metadata_delta(pairs, remove)
+
+        # Unfiltered, so a reserved pair still counts towards the maximum and
+        # still makes a no-op a no-op; only what is handed back is filtered.
+        current = await uow.nodes.metadata_for(node.id)
+        merged = merge_metadata(current, delta)
+        if merged == current:
+            return await self._view(uow, node, role), visible_metadata(current)
+
+        await uow.nodes.set_metadata(node.id, delta.pairs)
+        await uow.nodes.remove_metadata_keys(node.id, delta.removed)
+        written, removed = metadata_change_counts(current, merged)
+        await self._apply_label_change(
+            uow,
+            user,
+            node,
+            AuditAction.NODE_METADATA_CHANGED,
+            moment,
+            added=written,
+            removed=removed,
+        )
+        return await self._view(uow, node, role), visible_metadata(merged)
+
+    async def _apply_label_change(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node: Node,
+        action: AuditAction,
+        when: datetime,
+        *,
+        added: int,
+        removed: int,
+    ) -> None:
+        """Everything a partial update owes the rest of the system once it bites.
+
+        The revision is bumped in Python, exactly as the replace does, which is
+        safe here only because the node was read under the lock: the second patch
+        reads what the first committed. A SQL increment would leave this `Node` --
+        and therefore the ETag on the response -- on the pre-patch revision.
+        """
+        node.touch(when)
+        await uow.nodes.update(node)
+        await uow.flush()
+        await emit_audit(
+            uow,
+            AuditRecord(
+                action=action,
+                occurred_at=when,
+                actor_subject=user.subject,
+                target_id=str(node.id),
+                # Counts, never the tag or key text: activity is pruned on a
+                # different clock from the labels it would be quoting.
+                context={**owner_context(node, user.id), "added": added, "removed": removed},
+            ),
+        )
+        await self._invalidate(node.id, old_parent=node.parent_id)
+
     async def labels_for(
         self, uow: UnitOfWork, node_id: uuid.UUID
     ) -> tuple[frozenset[str], dict[str, str]]:
-        """A node's tags and metadata, for callers already authorized to read it."""
-        return await uow.nodes.tags_for(node_id), await uow.nodes.metadata_for(node_id)
+        """A node's tags and metadata, for callers already authorized to read it.
+
+        Reserved pairs are withheld, so the metadata a caller is handed is exactly
+        the metadata it may write back -- a `PUT` of what a `GET` returned must not
+        be refused for echoing a key CyberFS wrote.
+        """
+        tags = await uow.nodes.tags_for(node_id)
+        return tags, visible_metadata(await uow.nodes.metadata_for(node_id))
 
     @staticmethod
     async def current_digest(uow: UnitOfWork, node: Node) -> str | None:

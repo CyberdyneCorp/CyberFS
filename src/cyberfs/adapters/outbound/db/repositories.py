@@ -26,6 +26,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cyberfs.adapters.outbound.db import mappers
@@ -33,7 +34,7 @@ from cyberfs.adapters.outbound.db import models as m
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import FileVersion, Node, NodeKind
+from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node, NodeKind
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
@@ -314,13 +315,75 @@ class SqlNodeRepository:
         return dict(result.all())  # type: ignore[arg-type]
 
     async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        """Replace what the caller can write, which is everything unreserved.
+
+        The reserved namespace is deliberately excluded from the delete: a
+        replace of an empty collection would otherwise clear metadata CyberFS
+        wrote about the node, which is exactly what reserving the namespace is
+        meant to prevent. Nothing writes such a key yet, so today this deletes
+        the same rows it always did.
+        """
         await self._session.execute(
-            delete(m.NodeMetadataRow).where(m.NodeMetadataRow.node_id == node_id)
+            delete(m.NodeMetadataRow).where(m.NodeMetadataRow.node_id == node_id, _UNRESERVED_KEY)
         )
         for key in sorted(pairs):
             self._session.add(
                 m.NodeMetadataRow(id=uuid.uuid4(), node_id=node_id, key=key, value=pairs[key])
             )
+
+    # --- partial label updates ------------------------------------------
+    #
+    # Row-level statements rather than a whole-collection replace, so a patch
+    # touches only the rows it names. Handing the merged collection to
+    # `replace_*` would be correct under the lock the service takes, but it would
+    # delete every other row for the node on the way -- clobbering whatever a
+    # writer that does not hold that lock did in between.
+
+    async def add_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        if not tags:
+            return
+        statement = pg_insert(m.NodeTagRow).values(
+            [{"id": uuid.uuid4(), "node_id": node_id, "tag": tag} for tag in sorted(tags)]
+        )
+        # The unique constraint is what makes a concurrent insert of the same tag
+        # a no-op rather than an error.
+        await self._session.execute(
+            statement.on_conflict_do_nothing(constraint="uq_node_tags_node_tag")
+        )
+
+    async def remove_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        if not tags:
+            return
+        await self._session.execute(
+            delete(m.NodeTagRow).where(
+                m.NodeTagRow.node_id == node_id, m.NodeTagRow.tag.in_(sorted(tags))
+            )
+        )
+
+    async def set_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        if not pairs:
+            return
+        statement = pg_insert(m.NodeMetadataRow).values(
+            [
+                {"id": uuid.uuid4(), "node_id": node_id, "key": key, "value": pairs[key]}
+                for key in sorted(pairs)
+            ]
+        )
+        await self._session.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_node_metadata_node_key",
+                set_={"value": statement.excluded.value},
+            )
+        )
+
+    async def remove_metadata_keys(self, node_id: uuid.UUID, keys: frozenset[str]) -> None:
+        if not keys:
+            return
+        await self._session.execute(
+            delete(m.NodeMetadataRow).where(
+                m.NodeMetadataRow.node_id == node_id, m.NodeMetadataRow.key.in_(sorted(keys))
+            )
+        )
 
 
 class SqlKeyRepository:
@@ -588,6 +651,12 @@ _CYCLE_GUARD_DEPTH = 512
 
 def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+#: Excludes the system namespace from a caller's write. Case-insensitive, like
+#: the domain guard: a prefix that cannot be stepped around by shouting it on the
+#: way in must not be evadable on the way out either.
+_UNRESERVED_KEY = ~func.lower(m.NodeMetadataRow.key).startswith(RESERVED_METADATA_PREFIX)
 
 
 def kind_rank(kind: str) -> int:

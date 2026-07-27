@@ -17,7 +17,14 @@ from cyberfs.application.nodes import NodeView
 from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.backup import BackupRecord, is_stale
-from cyberfs.domain.nodes import EncryptionDefault, FileVersion, Node, NodeKind
+from cyberfs.domain.nodes import (
+    MAX_METADATA_PAIRS,
+    MAX_TAGS_PER_NODE,
+    EncryptionDefault,
+    FileVersion,
+    Node,
+    NodeKind,
+)
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.sharing import Grant, PublicLink
@@ -93,7 +100,10 @@ class NodeDetail(NodeSummary):
     role: str
     #: Labels on this node. Stored unencrypted so they can be searched.
     tags: list[str] = Field(default_factory=list)
-    #: Key/value pairs on this node. Also unencrypted, for the same reason.
+    #: Key/value pairs on this node. Also unencrypted, for the same reason. Pairs
+    #: in the reserved `cyberfs.` namespace are omitted: a caller can neither write
+    #: nor remove one, so showing it would mean handing back an object that fails
+    #: validation if it is written again unchanged.
     metadata: dict[str, str] = Field(default_factory=dict)
     #: SHA-256 of the current version's *plaintext*, or null for a folder or an
     #: empty file. Only ever returned to a caller who may read the content: it
@@ -167,6 +177,38 @@ class MetadataRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     metadata: list[MetadataPair] = Field(default_factory=list)
+
+
+class TagPatchRequest(BaseModel):
+    """A change to a node's tags: what to add, what to remove.
+
+    Explicit lists rather than a merge document. Tags are a set, and a merge
+    document replaces an array wholesale -- it has no way to name one element for
+    removal -- so a removal has to be named somewhere it can also be validated.
+
+    Each list is bounded by the per-node maximum, because no legitimate request
+    names more tags than a node could hold and an unbounded list is unbounded
+    work before any check runs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    add: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_NODE)
+    remove: list[str] = Field(default_factory=list, max_length=MAX_TAGS_PER_NODE)
+
+
+class MetadataPatchRequest(BaseModel):
+    """A change to a node's metadata: pairs to write, keys to delete.
+
+    Removal is a list of keys rather than a `null` value, so the reserved
+    namespace can be refused on the way out as well as on the way in: a deletion
+    hidden in a value slot cannot be inspected as a deletion.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    set: list[MetadataPair] = Field(default_factory=list, max_length=MAX_METADATA_PAIRS)
+    remove: list[str] = Field(default_factory=list, max_length=MAX_METADATA_PAIRS)
 
 
 class DeleteResult(BaseModel):

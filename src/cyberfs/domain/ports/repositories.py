@@ -132,7 +132,41 @@ class NodeRepository(Protocol):
 
     async def metadata_for(self, node_id: uuid.UUID) -> dict[str, str]: ...
 
-    async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None: ...
+    async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        """Make these exactly the pairs a caller can write.
+
+        Reserved keys are outside that: they are metadata CyberFS wrote about the
+        node, and a namespace a caller can empty is not one CyberFS can trust. So
+        they survive a replace, including a replace of nothing.
+        """
+        ...
+
+    async def add_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        """Add these tags, ignoring the ones already there.
+
+        A row at a time rather than a whole-collection write, so two callers
+        adding different tags do not overwrite each other -- the point of a
+        partial update.
+        """
+        ...
+
+    async def remove_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        """Drop these tags by name; ones the node does not carry are ignored."""
+        ...
+
+    async def set_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        """Write these keys, leaving every key not named byte-identical."""
+        ...
+
+    async def remove_metadata_keys(self, node_id: uuid.UUID, keys: frozenset[str]) -> None:
+        """Drop these keys; ones the node does not have are ignored.
+
+        No method advances the revision: a partial update bumps it with
+        `Node.touch` and persists through `update`, which is correct because it
+        read the node under `UnitOfWork.lock_subtree`. A SQL increment would leave
+        the in-memory `Node` -- and so the ETag on the response -- one behind.
+        """
+        ...
 
 
 class FileVersionRepository(Protocol):

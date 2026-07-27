@@ -22,7 +22,7 @@ from cyberfs.domain.activity import (
 from cyberfs.domain.audit import AuditProtocol, AuditRecord
 from cyberfs.domain.errors import NotFoundError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import FileVersion, Node
+from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
 from cyberfs.domain.s3.access_key import S3AccessKey
@@ -199,7 +199,34 @@ class FakeNodeRepository:
         return dict(self.metadata.get(node_id, {}))
 
     async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
-        self.metadata[node_id] = dict(pairs)
+        reserved = {
+            key: value
+            for key, value in self.metadata.get(node_id, {}).items()
+            if key.casefold().startswith(RESERVED_METADATA_PREFIX)
+        }
+        self.metadata[node_id] = {**reserved, **pairs}
+
+    # --- partial label updates ------------------------------------------
+    #
+    # Set arithmetic on a dict, which models the *result* of the row-level SQL
+    # and nothing else. There is no unique constraint here, no advisory lock, and
+    # no isolation, so `ON CONFLICT DO NOTHING`, the lost update these methods
+    # exist to avoid, the per-node maximum holding under concurrency, and two
+    # concurrent patches getting two distinct revisions are NOT provable against
+    # this fake -- only against real Postgres, in tests/integration.
+
+    async def add_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        self.tags[node_id] = self.tags.get(node_id, frozenset()) | tags
+
+    async def remove_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        self.tags[node_id] = self.tags.get(node_id, frozenset()) - tags
+
+    async def set_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        self.metadata.setdefault(node_id, {}).update(pairs)
+
+    async def remove_metadata_keys(self, node_id: uuid.UUID, keys: frozenset[str]) -> None:
+        current = self.metadata.get(node_id, {})
+        self.metadata[node_id] = {k: v for k, v in current.items() if k not in keys}
 
 
 class FakeKeyRepository:

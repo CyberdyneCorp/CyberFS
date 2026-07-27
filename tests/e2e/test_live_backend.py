@@ -397,6 +397,70 @@ def test_metadata_is_set_and_searched(api: httpx.Client, folder: str) -> None:
     assert [item["id"] for item in by_key.json()["items"]] == [node_id]
 
 
+def test_a_tag_is_added_and_removed_by_patch(api: httpx.Client, folder: str) -> None:
+    """The round trip a partial update exists to make unnecessary, end to end."""
+    node_id = upload(api, folder, f"patched-{uuid4().hex[:8]}.bin", os.urandom(1024))["id"]
+    label = f"e2e-patch-{uuid4().hex[:8]}"
+
+    added = api.patch(f"/api/v1/nodes/{node_id}/tags", json={"add": [label.upper()]})
+    assert added.status_code == 200, added.text
+    assert label in added.json()["tags"], "stored normalized"
+
+    found = api.get("/api/v1/search", params={"tag": label})
+    assert found.status_code == 200, found.text
+    assert node_id in [item["id"] for item in found.json()["items"]]
+
+    removed = api.patch(f"/api/v1/nodes/{node_id}/tags", json={"remove": [label]})
+    assert removed.status_code == 200, removed.text
+    assert label not in removed.json()["tags"]
+    assert node_id not in [
+        item["id"] for item in api.get("/api/v1/search", params={"tag": label}).json()["items"]
+    ]
+
+
+def test_two_metadata_patches_contribute_without_reading_first(
+    api: httpx.Client, folder: str
+) -> None:
+    """Neither request names the other's key, and both keys survive."""
+    node_id = upload(api, folder, f"contributed-{uuid4().hex[:8]}.bin", os.urandom(512))["id"]
+
+    first = api.patch(
+        f"/api/v1/nodes/{node_id}/metadata",
+        json={"set": [{"key": "e2e-first", "value": "1"}]},
+    )
+    assert first.status_code == 200, first.text
+    second = api.patch(
+        f"/api/v1/nodes/{node_id}/metadata",
+        json={"set": [{"key": "e2e-second", "value": "2"}]},
+    )
+    assert second.status_code == 200, second.text
+
+    assert second.json()["metadata"]["e2e-first"] == "1"
+    assert second.json()["metadata"]["e2e-second"] == "2"
+
+
+def test_a_repeated_identical_patch_returns_the_same_etag(api: httpx.Client, folder: str) -> None:
+    """A patch that changes nothing is not a write, so the validator must not move."""
+    node_id = upload(api, folder, f"stable-{uuid4().hex[:8]}.bin", os.urandom(512))["id"]
+    label = f"e2e-stable-{uuid4().hex[:8]}"
+
+    first = api.patch(f"/api/v1/nodes/{node_id}/tags", json={"add": [label]})
+    assert first.status_code == 200, first.text
+    second = api.patch(f"/api/v1/nodes/{node_id}/tags", json={"add": [label]})
+    assert second.status_code == 200, second.text
+
+    etag = first.headers["ETag"]
+    assert second.headers["ETag"] == etag
+    # And it is a usable validator, not just a stable string: the ingress must
+    # pass `If-Match` through for a patch as it does for a rename.
+    conditional = api.patch(
+        f"/api/v1/nodes/{node_id}/tags",
+        json={"add": [f"{label}-next"]},
+        headers={"If-Match": etag},
+    )
+    assert conditional.status_code == 200, conditional.text
+
+
 def test_the_digest_matches_the_bytes_uploaded(api: httpx.Client, folder: str) -> None:
     """Across frame boundaries and encrypted, where a broken digest would show."""
     body = os.urandom(LARGE)

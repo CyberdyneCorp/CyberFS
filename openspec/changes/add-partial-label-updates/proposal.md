@@ -70,9 +70,15 @@ None. This extends `file-storage`.
 
 **Affected code:**
 
-- `src/cyberfs/domain/nodes.py` -- validation for a tag delta and a metadata
-  delta, reusing the existing constants; a helper that refuses a request naming
-  the same tag or key in both directions.
+- `src/cyberfs/domain/labels.py` (new) -- validation for a tag delta and a
+  metadata delta, reusing the existing constants and per-entry rules from
+  `nodes.py`; a helper that refuses a request naming the same tag or key in both
+  directions; the merge as a pure function; and the single reserved-prefix
+  predicate every other place in this change tests through. A module of its own
+  rather than more of `nodes.py`: a delta is validated in both directions, can
+  contradict itself, and has its limits checked against its result rather than
+  against itself, so it is a different kind of thing from a collection.
+  `nodes.py` keeps the constants and is not modified.
 - `src/cyberfs/adapters/outbound/db/repositories.py` -- `add_tags`,
   `remove_tags`, `set_metadata`, `remove_metadata_keys`; the existing
   `replace_metadata` learns to leave reserved keys alone.
