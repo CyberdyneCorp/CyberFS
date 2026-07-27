@@ -80,7 +80,36 @@ class NodeRepository(Protocol):
         """Cycle check for a move, evaluated inside the transaction."""
         ...
 
-    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> int: ...
+    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        """Trash the node and every live descendant, returning the rows it moved.
+
+        A descendant already in the trash keeps its original `deleted_at` and is
+        NOT returned: it was trashed on its own occasion and its bytes are
+        already counted there. Returning only what moved is what lets the caller
+        charge the quota exactly once -- summing the whole subtree instead
+        charges an already-trashed descendant a second time.
+        """
+        ...
+
+    async def restore_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        """Lift the node and the descendants trashed together with it, as they
+        now stand.
+
+        A delete stamps one `deleted_at` across the whole subtree, so equality
+        with the node's own is what identifies its batch. A descendant trashed
+        separately beforehand carries a different stamp and stays trashed:
+        restoring it would resurrect something deleted on purpose. The rows
+        actually cleared come back so the caller can release exactly their
+        bytes -- no more.
+
+        The timestamp IS the batch identity, which holds only because every
+        delete passes a fresh `utcnow()`. A caller that threaded one `now`
+        through two sibling deletes would merge them into one batch and this
+        would resurrect the wrong rows -- so do not. Recording an explicit batch
+        id is the fix if a bulk delete ever needs to.
+        """
+        ...
+
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]: ...
     async def delete_permanently(self, node_id: uuid.UUID) -> None: ...
 

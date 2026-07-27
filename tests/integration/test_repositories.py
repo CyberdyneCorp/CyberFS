@@ -22,6 +22,7 @@ from cyberfs.domain.users import QuotaUsage, User
 pytestmark = pytest.mark.integration
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+LATER = NOW + timedelta(hours=1)
 GB = 1024**3
 GUARD = 512
 
@@ -344,6 +345,56 @@ async def test_soft_delete_leaves_siblings_alone(uow: SqlUnitOfWork) -> None:
 
     survivor = await uow.nodes.get(b.id)
     assert survivor is not None and not survivor.is_deleted
+
+
+# --- subtree restore -------------------------------------------------------
+
+
+async def test_restore_lifts_the_whole_batch(uow: SqlUnitOfWork) -> None:
+    user = await make_user(uow)
+    a = await add_folder(uow, user, "a", user.root_folder_id)
+    b = await add_folder(uow, user, "b", a.id)
+    leaf = await add_file(uow, user, "leaf.txt", b.id, size=1000)
+    await uow.nodes.soft_delete_subtree(a.id, NOW)
+    await uow.flush()
+
+    cleared = await uow.nodes.restore_subtree(a.id, LATER)
+    await uow.flush()
+
+    assert {n.id for n in cleared} == {a.id, b.id, leaf.id}
+    assert sum(n.size_bytes for n in cleared if n.is_file) == 1000
+    for node_id in (a.id, b.id, leaf.id):
+        node = await uow.nodes.get(node_id)
+        assert node is not None and not node.is_deleted
+        # One bump for the delete and one for the restore, so an `If-Match`
+        # taken before either is refused.
+        assert node.revision == 2
+
+
+async def test_restore_leaves_an_earlier_delete_in_the_trash(uow: SqlUnitOfWork) -> None:
+    """`deleted_at` equality is the batch key: a descendant trashed on its own
+    occasion carries a different stamp and stays trashed."""
+    user = await make_user(uow)
+    a = await add_folder(uow, user, "a", user.root_folder_id)
+    dropped = await add_file(uow, user, "dropped.txt", a.id, size=400)
+    kept = await add_file(uow, user, "kept.txt", a.id, size=1000)
+    earlier = NOW - timedelta(hours=1)
+    await uow.nodes.soft_delete_subtree(dropped.id, earlier)
+    await uow.nodes.soft_delete_subtree(a.id, NOW)
+    await uow.flush()
+
+    cleared = await uow.nodes.restore_subtree(a.id, LATER)
+    await uow.flush()
+
+    assert {n.id for n in cleared} == {a.id, kept.id}
+    left_behind = await uow.nodes.get(dropped.id)
+    assert left_behind is not None and left_behind.deleted_at == earlier
+
+
+async def test_restoring_a_live_node_clears_nothing(uow: SqlUnitOfWork) -> None:
+    user = await make_user(uow)
+    a = await add_folder(uow, user, "a", user.root_folder_id)
+    assert await uow.nodes.restore_subtree(a.id, LATER) == ()
 
 
 async def test_trash_sweep_finds_expired_nodes(uow: SqlUnitOfWork) -> None:

@@ -388,9 +388,13 @@ class NodeService:
         if node.is_root:
             raise ValidationError("a root folder cannot be deleted")
 
-        # Measured before the delete, while the subtree is still visible.
-        bytes_trashed = await self._subtree_bytes(uow, node)
-        count = await uow.nodes.soft_delete_subtree(node.id, moment)
+        trashed = await uow.nodes.soft_delete_subtree(node.id, moment)
+        count = len(trashed)
+        # Only the rows that actually moved are charged. Summing the whole
+        # subtree would charge a descendant already in the trash a second time,
+        # leaving the buckets disagreeing with the rows until the reconcile job
+        # noticed -- the mirror image of the restore bug this accompanies.
+        bytes_trashed = sum(n.size_bytes for n in trashed if n.is_file)
         # The bytes are still stored, so they still count -- they just move
         # from live to trashed until a purge actually frees them.
         await self._move_bytes(uow, node.owner_id, bytes_trashed, moment, to_trash=True)
@@ -422,16 +426,27 @@ class NodeService:
         )
 
         parent = await uow.nodes.get(node.parent_id) if node.parent_id else None
-        if parent is None or parent.is_deleted:
+        if parent is not None and not parent.is_deleted:
+            destination = parent.id
+        else:
             # The original home is gone; the root always exists.
-            node.parent_id = user.root_folder_id
-        destination = node.parent_id
-        assert destination is not None, "a restored node always has a parent"
+            destination = user.root_folder_id
         await self._ensure_name_free(uow, destination, node.normalized_name, excluding=node.id)
 
-        node.restore(moment)
+        # The repository clears the rows first: the node's own `deleted_at` is
+        # what identifies the batch it went to the trash with, so nothing here
+        # may touch it beforehand.
+        cleared = await uow.nodes.restore_subtree(node.id, moment)
+        # Re-read, so the new parent is stamped on top of the row the repository
+        # just wrote rather than under a copy that still looks trashed.
+        node = await uow.nodes.get(node_id)
+        assert node is not None, "the subtree was cleared, not removed"
+        node.parent_id = destination
         await uow.nodes.update(node)
-        restored = await self._subtree_bytes(uow, node)
+        # Only the rows that actually came back leave the trashed bucket. A
+        # descendant trashed on an earlier occasion stays there, bytes and all,
+        # so the buckets keep matching what the rows say.
+        restored = sum(n.size_bytes for n in cleared if n.is_file)
         await self._move_bytes(uow, node.owner_id, restored, moment, to_trash=False)
         await uow.flush()
         await self._audit(uow, user, node, AuditAction.NODE_RESTORED, moment)
@@ -625,14 +640,6 @@ class NodeService:
         usage.ensure_room_for(user.quota_bytes, size_bytes)
         usage.charge_live(size_bytes, now)
         await uow.quotas.update(usage)
-
-    @staticmethod
-    async def _subtree_bytes(uow: UnitOfWork, node: Node) -> int:
-        """Total content bytes in a node and everything beneath it."""
-        subtree = await uow.nodes.descendants(
-            node.id, max_depth=ANCESTOR_GUARD_DEPTH, include_deleted=True
-        )
-        return sum(n.size_bytes for n in (node, *subtree) if n.is_file)
 
     @staticmethod
     async def _move_bytes(

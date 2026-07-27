@@ -53,10 +53,16 @@ def upload(client: TestClient, who: dict[str, str], parent: str, name: str) -> s
 
 
 def usage(client: TestClient, who: dict[str, str]) -> dict[str, int]:
-    """The owner's byte counters, read through the admin surface.
+    """The owner's byte totals, read through the admin surface.
 
     Queried as an administrator, not as `who`: `/api/v1/admin/users` requires
     admin rights, so asking as the owner is a 403.
+
+    These are aggregates over the `nodes` rows (`SqlAdminQueries._node_counts`),
+    NOT the `quota_usage` counters -- no endpoint exposes those. So a test built
+    on this proves the rows were destroyed, which is what purge is for; it does
+    not prove the counters moved with them. That belongs to the unit tests, which
+    can compare against `quotas.recompute`.
     """
     listing = client.get("/api/v1/admin/users", headers=ADMIN)
     assert listing.status_code == HTTPStatus.OK, listing.text
@@ -166,7 +172,7 @@ def test_purging_a_folder_takes_the_whole_subtree(client: TestClient) -> None:
 # --- quota -----------------------------------------------------------------
 
 
-def test_quota_is_released_immediately(client: TestClient) -> None:
+def test_purged_bytes_leave_the_row_totals(client: TestClient) -> None:
     node_id = upload(client, ALICE, root_id(client, ALICE), "space.bin")
 
     after_upload = usage(client, ALICE)

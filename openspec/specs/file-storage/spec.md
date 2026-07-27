@@ -211,6 +211,21 @@ Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, 
 - **WHEN** the owner restores a soft-deleted node whose parent still exists and is not deleted
 - **THEN** the system SHALL make it visible again in that parent
 
+#### Scenario: Restore lifts the subtree the delete trashed
+
+- **WHEN** the owner restores a soft-deleted folder
+- **THEN** the system SHALL bring back every descendant that the same delete trashed, SHALL advance the revision of each node it brings back so a precondition taken before the delete no longer matches, and SHALL return exactly those nodes' bytes from the trashed bucket to the live one
+
+#### Scenario: A descendant deleted on its own occasion stays trashed
+
+- **WHEN** the owner restores a folder holding a descendant that was soft-deleted separately beforehand
+- **THEN** the system SHALL leave that descendant in the trash with its bytes still counted as trashed, counted once
+
+#### Scenario: Deleting charges only what it moved
+
+- **WHEN** the owner soft-deletes a folder holding a descendant that was already in the trash
+- **THEN** the system SHALL move only the bytes it actually trashed, leaving the already-trashed descendant counted once rather than twice
+
 #### Scenario: Restore to a deleted parent
 
 - **WHEN** the owner restores a node whose original parent has been purged

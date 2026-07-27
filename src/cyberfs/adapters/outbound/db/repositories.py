@@ -185,18 +185,52 @@ class SqlNodeRepository:
         chain = await self.ancestors(node_id, max_depth=_CYCLE_GUARD_DEPTH)
         return any(node.id == candidate_id for node in chain)
 
-    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> int:
-        subtree = await self.descendants(node_id, max_depth=_CYCLE_GUARD_DEPTH)
-        ids = [node_id, *(n.id for n in subtree)]
-        result = cast(
-            CursorResult[Any],
-            await self._session.execute(
-                update(m.NodeRow)
-                .where(m.NodeRow.id.in_(ids), m.NodeRow.deleted_at.is_(None))
-                .values(deleted_at=now, updated_at=now, revision=m.NodeRow.revision + 1)
-            ),
+    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        row = await self._session.get(m.NodeRow, node_id)
+        if row is None:
+            return ()
+        subtree = await self.descendants(
+            node_id, max_depth=_CYCLE_GUARD_DEPTH, include_deleted=True
         )
-        return int(result.rowcount or 0)
+        # Read off before the UPDATE expires the rows it walked over, and keep
+        # only the live ones: the `deleted_at IS NULL` guard below leaves an
+        # already-trashed descendant on its original stamp, so it does not move
+        # and must not be charged again.
+        moving = [
+            mappers.node_from_row(row),
+            *(n for n in subtree if not n.is_deleted),
+        ]
+        if row.deleted_at is not None:
+            moving = [n for n in moving if n.id != node_id]
+        await self._session.execute(
+            update(m.NodeRow)
+            .where(m.NodeRow.id.in_([n.id for n in moving]), m.NodeRow.deleted_at.is_(None))
+            .values(deleted_at=now, updated_at=now, revision=m.NodeRow.revision + 1)
+        )
+        for node in moving:
+            node.soft_delete(now)
+        return tuple(moving)
+
+    async def restore_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        row = await self._session.get(m.NodeRow, node_id)
+        if row is None or row.deleted_at is None:
+            return ()
+        # One delete wrote one timestamp, so the batch is already recorded:
+        # a descendant stamped differently was trashed on its own occasion.
+        batch = row.deleted_at
+        subtree = await self.descendants(
+            node_id, max_depth=_CYCLE_GUARD_DEPTH, include_deleted=True
+        )
+        # Read off before the UPDATE expires the row it walked over.
+        cleared = [mappers.node_from_row(row), *(n for n in subtree if n.deleted_at == batch)]
+        await self._session.execute(
+            update(m.NodeRow)
+            .where(m.NodeRow.id.in_([n.id for n in cleared]), m.NodeRow.deleted_at == batch)
+            .values(deleted_at=None, updated_at=now, revision=m.NodeRow.revision + 1)
+        )
+        for node in cleared:
+            node.restore(now)
+        return tuple(cleared)
 
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]:
         result = await self._session.execute(

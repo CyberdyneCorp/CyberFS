@@ -20,6 +20,7 @@ pytestmark = pytest.mark.integration
 
 ALICE = {"Authorization": "Bearer dev:alice"}
 BOB = {"Authorization": "Bearer dev:bob"}
+ADMIN = {"Authorization": "Bearer dev:root:admin"}
 PAYLOAD = b"the quick brown fox jumps over the lazy dog\n" * 100
 
 ENDPOINT = minio_endpoint()
@@ -290,6 +291,38 @@ def test_restoring_brings_the_content_back(client: TestClient) -> None:
 
     response = client.get(f"/api/v1/nodes/{node['id']}/content", headers=ALICE)
     assert response.content == PAYLOAD
+
+
+def test_restoring_a_folder_brings_its_file_back(client: TestClient) -> None:
+    """`file-storage/spec.md`: the folder is visible in its parent again, and
+    so is what it held.
+
+    The admin figures below are row aggregates -- `SqlAdminQueries._node_counts`
+    sums `nodes.size_bytes`, it does not read `quota_usage` -- so they restate
+    what the listing already showed rather than proving anything about the
+    counters. The bucket accounting is covered where it can actually be observed:
+    `tests/unit/test_node_service.py` compares against `quotas.recompute`, and
+    `tests/integration/test_repositories.py` checks the rows against real SQL.
+    """
+    root = root_id(client, ALICE)
+    folder = client.post(
+        f"/api/v1/nodes/{root}/folders", json={"name": "papers"}, headers=ALICE
+    ).json()
+    node = upload(client, ALICE, str(folder["id"]), "notes.txt", PAYLOAD)
+
+    assert client.delete(f"/api/v1/nodes/{folder['id']}", headers=ALICE).json()["deleted"] == 2
+    restored = client.post(f"/api/v1/nodes/{folder['id']}/restore", headers=ALICE)
+    assert restored.status_code == HTTPStatus.OK
+
+    listing = client.get(f"/api/v1/nodes/{folder['id']}/children", headers=ALICE).json()
+    assert [item["id"] for item in listing["items"]] == [node["id"]]
+    assert client.get(f"/api/v1/nodes/{node['id']}/content", headers=ALICE).content == PAYLOAD
+
+    users = client.get("/api/v1/admin/users", headers=ADMIN).json()["items"]
+    alice = next(u for u in users if u["subject"] == "alice")
+    assert alice["live_bytes"] == len(PAYLOAD)
+    assert alice["trashed_bytes"] == 0
+    assert alice["used_bytes"] == len(PAYLOAD)
 
 
 # --- encryption ------------------------------------------------------------

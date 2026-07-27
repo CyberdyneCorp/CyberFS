@@ -62,6 +62,15 @@ async def add_file(
     return node
 
 
+async def charge_live(uow: FakeUnitOfWork, user: User, size: int) -> None:
+    """`add_file` writes a row without going through the upload path, so the
+    live bucket is charged here when a test cares about the quota."""
+    usage = await uow.quotas.get(user.id)
+    assert usage is not None
+    usage.charge_live(size, NOW)
+    await uow.quotas.update(usage)
+
+
 async def grant(uow: FakeUnitOfWork, node_id: uuid.UUID, subject: str, role: Role) -> None:
     await uow.grants.add(
         Grant(
@@ -502,6 +511,104 @@ async def test_restore_falls_back_to_the_root_when_the_parent_is_gone(
 
     view = await svc.restore(uow, user, child.node.id, now=LATER)
     assert view.node.parent_id == user.root_folder_id
+
+
+async def test_restore_brings_back_the_deleted_subtree(
+    world: World,
+) -> None:
+    """`file-storage/spec.md`: the node becomes visible in its parent again.
+
+    A folder whose contents stayed in the trash is not that -- and with no
+    trash view over descendants, they would be unreachable.
+    """
+    uow, user, svc = world
+    folder = await svc.create_folder(uow, user, user.root_folder_id, "papers", now=NOW)
+    inner = await svc.create_folder(uow, user, folder.node.id, "drafts", now=NOW)
+    leaf = await add_file(uow, user, "notes.txt", inner.node.id, size=1000)
+    await svc.delete(uow, user, folder.node.id, now=LATER)
+
+    await svc.restore(uow, user, folder.node.id, now=LATER)
+
+    listing = await svc.list_children(uow, user, folder.node.id, limit=10)
+    assert [n.id for n in listing.items] == [inner.node.id]
+    lifted = await uow.nodes.get(leaf.id)
+    assert lifted is not None and not lifted.is_deleted
+
+
+async def test_restore_returns_the_subtree_bytes_to_the_live_bucket(
+    world: World,
+) -> None:
+    uow, user, svc = world
+    folder = await svc.create_folder(uow, user, user.root_folder_id, "papers", now=NOW)
+    await add_file(uow, user, "a.bin", folder.node.id, size=1000)
+    await add_file(uow, user, "b.bin", folder.node.id, size=500)
+    await charge_live(uow, user, 1500)
+    await svc.delete(uow, user, folder.node.id, now=LATER)
+
+    await svc.restore(uow, user, folder.node.id, now=LATER)
+
+    usage = await uow.quotas.get(user.id)
+    assert usage is not None
+    assert (usage.live_bytes, usage.trashed_bytes) == (1500, 0)
+    # Counted once, and against what the rows actually say: buckets that
+    # disagree with the metadata are drift the reconcile job would correct.
+    assert usage.total_bytes == 1500
+    truth = await uow.quotas.recompute(user.id)
+    assert (usage.live_bytes, usage.trashed_bytes) == (truth.live_bytes, truth.trashed_bytes)
+
+
+async def test_a_child_deleted_before_its_parent_stays_trashed(
+    world: World,
+) -> None:
+    """It carries a different `deleted_at`, so it was never part of the
+    parent's batch -- restoring it would undo a deliberate delete."""
+    uow, user, svc = world
+    folder = await svc.create_folder(uow, user, user.root_folder_id, "papers", now=NOW)
+    kept = await add_file(uow, user, "kept.bin", folder.node.id, size=1000)
+    dropped = await add_file(uow, user, "dropped.bin", folder.node.id, size=400)
+    # Unrelated live bytes on purpose. `move_to_trash` clamps at `live_bytes`,
+    # so an owner whose whole account is inside this folder makes an
+    # over-charge look correct; this leaves headroom for the clamp to expose it.
+    unrelated = await add_file(uow, user, "unrelated.bin", user.root_folder_id, size=2000)
+    await charge_live(uow, user, 3400)
+    await svc.delete(uow, user, dropped.id, now=NOW)
+    await svc.delete(uow, user, folder.node.id, now=LATER)
+
+    await svc.restore(uow, user, folder.node.id, now=LATER)
+
+    left_behind = await uow.nodes.get(dropped.id)
+    assert left_behind is not None and left_behind.deleted_at == NOW
+    lifted = await uow.nodes.get(kept.id)
+    assert lifted is not None and not lifted.is_deleted
+    assert unrelated is not None
+
+    usage = await uow.quotas.get(user.id)
+    assert usage is not None
+    assert (usage.live_bytes, usage.trashed_bytes) == (3000, 400)
+    # The counters must agree with what the rows actually say. Asserting the
+    # numbers alone would pass while both were wrong by the same amount, which
+    # is how the delete-side double charge stayed hidden.
+    truth = await uow.quotas.recompute(user.id)
+    assert (usage.live_bytes, usage.trashed_bytes) == (truth.live_bytes, truth.trashed_bytes)
+
+
+async def test_restore_advances_the_revision_of_every_row_it_lifts(
+    world: World,
+) -> None:
+    """So an `If-Match` taken before the delete is refused afterwards."""
+    uow, user, svc = world
+    folder = await svc.create_folder(uow, user, user.root_folder_id, "papers", now=NOW)
+    leaf = await add_file(uow, user, "notes.txt", folder.node.id)
+    stale = folder.node.etag
+    await svc.delete(uow, user, folder.node.id, now=LATER)
+    trashed_at_revision = leaf.revision
+
+    await svc.restore(uow, user, folder.node.id, now=LATER)
+
+    lifted = await uow.nodes.get(leaf.id)
+    assert lifted is not None and lifted.revision > trashed_at_revision
+    with pytest.raises(PreconditionFailedError):
+        await svc.rename(uow, user, folder.node.id, "renamed", if_match=stale, now=LATER)
 
 
 # --- copy ------------------------------------------------------------------

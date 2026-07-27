@@ -132,14 +132,26 @@ class FakeNodeRepository:
         chain = await self.ancestors(node_id, max_depth=512)
         return any(n.id == candidate_id for n in chain)
 
-    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> int:
-        targets = [self.by_id[node_id], *await self.descendants(node_id, max_depth=512)]
-        count = 0
-        for node in targets:
-            if not node.is_deleted:
-                node.soft_delete(now)
-                count += 1
-        return count
+    async def soft_delete_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        targets = [
+            self.by_id[node_id],
+            *await self.descendants(node_id, max_depth=512, include_deleted=True),
+        ]
+        moved = [n for n in targets if not n.is_deleted]
+        for node in moved:
+            node.soft_delete(now)
+        return tuple(moved)
+
+    async def restore_subtree(self, node_id: uuid.UUID, now: datetime) -> tuple[Node, ...]:
+        node = self.by_id.get(node_id)
+        if node is None or node.deleted_at is None:
+            return ()
+        batch = node.deleted_at
+        subtree = await self.descendants(node_id, max_depth=512, include_deleted=True)
+        cleared = [node, *(n for n in subtree if n.deleted_at == batch)]
+        for target in cleared:
+            target.restore(now)
+        return tuple(cleared)
 
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]:
         trashed = [
