@@ -2,12 +2,22 @@
 
 ### Requirement: WebDAV protocol surface
 
-CyberFS SHALL expose a WebDAV Class 1 surface at a configurable base path, mounted only when enabled, supporting `OPTIONS`, `PROPFIND`, `GET`, `HEAD`, `PUT`, `DELETE`, `MKCOL`, `COPY` and `MOVE`.
+CyberFS SHALL expose a WebDAV Class 1 surface at a configurable base path, supporting `OPTIONS`, `PROPFIND`, `GET`, `HEAD`, `PUT`, `DELETE`, `MKCOL`, `COPY` and `MOVE`. The surface SHALL be available by default and SHALL be switchable off.
 
-#### Scenario: The surface is opt-in
+#### Scenario: The surface is available without being asked for
 
-- **WHEN** WebDAV is not enabled
+- **WHEN** a deployment sets no WebDAV configuration
+- **THEN** the surface SHALL be mounted, so a file manager can reach a deployment nobody configured for it
+
+#### Scenario: The surface can be switched off
+
+- **WHEN** WebDAV is explicitly disabled
 - **THEN** no WebDAV route SHALL exist, and a request to the base path SHALL be indistinguishable from a request to any other unmapped path
+
+#### Scenario: Plaintext is refused rather than served
+
+- **WHEN** a request reaches the surface over plaintext in a production deployment
+- **THEN** the system SHALL refuse it, because Basic authentication carries the secret on every request and the surface is mounted by default -- a deployment that never opted in must not leak a credential per request
 
 #### Scenario: Compliance is advertised honestly
 

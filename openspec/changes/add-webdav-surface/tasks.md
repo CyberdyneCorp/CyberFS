@@ -1,8 +1,12 @@
 ## 1. Configuration
 
-- [ ] 1.1 Add `WEBDAV_ENABLED` (default false) and `WEBDAV_BASE_PATH` (default `/webdav`) to `Settings`
-- [ ] 1.2 Document both in `.env.example` and `coolify.yaml`, noting that Basic auth means the surface should be switched on deliberately
-- [ ] 1.3 Refuse to serve in production unless the request arrived over TLS, and unit-test the refusal
+- [ ] 1.1 Add `WEBDAV_ENABLED` (default **true**) and `WEBDAV_BASE_PATH` (default `/webdav`) to `Settings`
+- [ ] 1.2 Document both in `.env.example` and `coolify.yaml`, stating that the surface is on by default, that Basic auth carries the secret on every request, and how to switch it off
+- [ ] 1.3 Refuse to serve in production unless the request arrived over TLS, and unit-test the
+      refusal. This is the load-bearing guard now that the surface is mounted by default: it is
+      what stops a deployment that never opted in from leaking a credential per request
+- [ ] 1.4 Confirm nothing is disclosed before authentication -- no method may reveal whether a
+      path exists to an unauthenticated caller, since the surface is now present everywhere
 
 ## 2. Domain
 
@@ -55,7 +59,9 @@
 - [ ] 7.8 `Depth: infinity` is refused
 - [ ] 7.9 `LOCK` and `UNLOCK` return `405`
 - [ ] 7.10 Plaintext in production is refused
-- [ ] 7.11 No route exists when disabled
+- [ ] 7.11 No route exists when explicitly disabled
+- [ ] 7.12 The surface IS mounted with no WebDAV configuration set, pinning the new default so a
+      later change cannot flip it back silently
 
 ## 8. Integration tests
 

@@ -13,9 +13,9 @@ code appears in this change.
 
 ## What Changes
 
-- A WebDAV surface at `WEBDAV_BASE_PATH` (default `/webdav`), mounted only when
-  `WEBDAV_ENABLED` is true, exactly as the S3 surface is gated. A deployment that
-  does not offer WebDAV exposes no such routes at all.
+- A WebDAV surface at `WEBDAV_BASE_PATH` (default `/webdav`), mounted **by
+  default**. `WEBDAV_ENABLED` defaults true and exists to switch it off; a
+  deployment that sets it false exposes no such routes at all.
 - **Class 1 compliance**: `OPTIONS`, `PROPFIND` (Depth 0 and 1), `GET`, `HEAD`,
   `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`. Advertised as `DAV: 1` so a client
   knows what it is talking to.
@@ -75,11 +75,22 @@ knows before trying:
   raises questions about the reserved namespace and the limits that deserve their
   own change.
 
-**Security posture.** Basic authentication sends the secret on every request, so
-the surface must refuse to serve over plaintext in production. The access key is
-already sealed under `MASTER_KEY` and revocable in one write, so a leaked key is
-no worse than a leaked S3 key — but Basic makes leakage easier, which is why
-`OPTIONS` advertises nothing and every method authenticates before it reveals
-whether a path exists.
+**Security posture, and it is the main cost of this change.** Basic
+authentication sends the secret on every request, and the surface is mounted by
+default — so unlike `S3_API_ENABLED`, which defaults false, this reaches every
+deployment whether or not anyone asked for it. Two consequences the
+implementation must carry rather than assume:
+
+- **Refusing plaintext is load-bearing, not a nicety.** A deployment that never
+  opted in must not leak a credential per request because it terminates TLS
+  somewhere unexpected. Production refuses a plaintext request outright.
+- **Nothing is revealed before authentication.** `OPTIONS` advertises the methods
+  and nothing about content, and every other method authenticates before it
+  discloses whether a path exists, so a mounted-by-default surface is not a
+  namespace oracle.
+
+The access key is already sealed under `MASTER_KEY` and revocable in one write, so
+a leaked key is contained the way a leaked S3 key is. Basic simply makes leakage
+easier, which is what the two rules above answer.
 
 **No schema change.** No migration, no new table, no new credential.

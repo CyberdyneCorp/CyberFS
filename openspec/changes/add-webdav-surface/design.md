@@ -115,11 +115,36 @@ Purely additive and off by default: no migration, no new table, no new credentia
 and no route exists until `WEBDAV_ENABLED` is set. Rolling back is unsetting it.
 Nothing else in the system can tell whether the surface is mounted.
 
-## Open Questions
+**`WEBDAV_ENABLED` defaults true.** Decided: the surface is mounted unless a
+deployment turns it off. The argument for it is that a filesystem surface nobody
+enabled is a filesystem surface nobody uses, and the whole point of speaking WebDAV
+is that a file manager can reach a deployment without its operator having
+configured anything.
 
-- Should `WEBDAV_ENABLED` default on in the deployment once verified? It is off in
-  this change because a surface that authenticates with Basic should be switched on
-  deliberately, not inherited.
+The argument against, recorded because it is real and was overruled rather than
+absent: this diverges from `S3_API_ENABLED`, which defaults false so that a
+deployment offering no S3 exposes no S3 routes. Secure-by-default would have the
+same posture here, and more so, because Basic authentication puts the secret on
+every request where SigV4 puts a signature. Defaulting on means every deployment
+of this code carries the surface whether or not anyone considered it.
+
+What that costs is paid in two places rather than by the default itself, and both
+are requirements rather than intentions:
+
+- Production **refuses a plaintext request** to this surface outright. With the
+  default off, that is a guard against misconfiguration; with it on, it is the only
+  thing standing between an unconsidered deployment and a credential leaking on
+  every request.
+- Nothing is disclosed before authentication, so a surface that is present
+  everywhere is not a way to probe whether a path exists.
+
+Turning it off remains one variable, and no other behaviour depends on whether it
+is mounted.
+
+## Open Questions
+- With the surface on by default, is `/webdav` the right base path, or should it be
+  something a reverse proxy is less likely to have already claimed? Nothing depends
+  on the value; it is a collision question, not a design one.
 - RFC 4331 quota properties would let a file manager show free space, which is a
   real usability gain. Deferred with `PROPPATCH` because both are property
   vocabulary decisions, but it is the more valuable of the two.
