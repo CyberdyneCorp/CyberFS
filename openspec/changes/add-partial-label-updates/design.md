@@ -16,7 +16,9 @@ And `node.touch()` bumps the revision in Python from a value read earlier, so tw
 concurrent writers can both persist `revision = N + 1` -- the ETag then fails to
 distinguish two different states. Both are tolerable for a replace, whose caller
 is asserting a complete state anyway. Neither is tolerable for the verb whose
-entire purpose is independent concurrent writers.
+entire purpose is independent concurrent writers, so each is addressed below: the
+clobber by writing deltas rather than collections, and the colliding revision by
+serializing the read the bump is computed from.
 
 ## Goals / Non-Goals
 
@@ -24,8 +26,10 @@ entire purpose is independent concurrent writers.
 
 - Add or remove individual tags, and set or delete individual metadata keys,
   without a read-modify-write round trip.
-- Let two writers who touch disjoint labels both succeed, without coordination.
-- Make the reserved metadata namespace survive a caller's write.
+- Let two writers who touch disjoint labels both succeed, without coordinating
+  with each other. The server may order them; the callers never have to.
+- Make the reserved metadata namespace survive a caller's write, and stop showing
+  it to a caller who can neither write nor remove it.
 
 **Non-Goals:**
 
@@ -98,25 +102,92 @@ than an intent. `422`, nothing changed.
 **An empty patch is refused.** A body with nothing in `add`, `remove`, or `set`
 is a read dressed as a write. `GET` already exists.
 
-**Merge happens in SQL, not in the service.** `INSERT … ON CONFLICT DO NOTHING`
-for added tags, `INSERT … ON CONFLICT (node_id, key) DO UPDATE` for set pairs,
-`DELETE … WHERE tag IN (…)` for removals. The alternative -- read the collection,
-merge in Python, call the existing `replace_*` -- is a read-modify-write inside
-the transaction, which is exactly the race the endpoint exists to remove: under
-the default isolation level two such transactions each read the pre-state and the
-second's replace deletes the first's insert. Row-level statements make disjoint
-patches commute, and the unique constraints that make `ON CONFLICT` work are
-already in place.
+**The delta is applied as row-level statements, not as a whole-collection
+replace.** `INSERT … ON CONFLICT DO NOTHING` for added tags,
+`INSERT … ON CONFLICT (node_id, key) DO UPDATE` for set pairs,
+`DELETE … WHERE tag IN (…)` for removals. The alternative -- compute the merged
+collection and hand it to the existing `replace_*` -- would be correct under the
+lock below and needs no new repository method, which makes it tempting. It is
+still the wrong shape: `replace_*` deletes every row for the node, so a patch
+would clobber whatever a writer that does *not* hold the lock did in between --
+a `PUT`, or any label writer added later. Naming only the rows the request names
+keeps a patch's blast radius equal to its delta whoever else is writing, which
+is the property the endpoint is sold on. The unique constraints `ON CONFLICT`
+needs are already in place.
 
-**The revision is bumped by a SQL increment, and only if something changed.**
-`UPDATE node SET revision = revision + 1, updated_at = :now` in the same
-transaction, rather than `node.touch()` on a value read earlier. Two concurrent
-patches then produce two distinct revisions instead of both writing `N + 1`,
-which matters far more for a verb built for concurrent writers than for a
-replace. The recursive soft delete already bumps this way, so the pattern is not
-new. `PUT` keeps its Python bump: changing it is a behavioural change to a
-shipped endpoint that this change does not need, and it is a small, separate
-cleanup.
+**A patch serializes on the node it patches; lock-freedom is what is given up.**
+`uow.lock_subtree(node_id)` -- the transaction-scoped Postgres advisory lock
+`move` already takes (`application/nodes.py:344`) -- is the first statement of
+the request, taken before the node row is read. Everything after it is inside
+the critical section: the node read, the `If-Match` comparison, the read of the
+current collection, the merge, the limit check, the writes, the revision bump.
+Reading the node only after the lock matters twice over: it keeps the session's
+identity map from handing back a pre-lock snapshot, and it is what makes the
+returned ETag describe a state nobody could have moved underneath it.
+
+This leans on the isolation level the engine already runs at. Nothing in
+`infrastructure/db.py` sets one, so it is Postgres' default `READ COMMITTED`,
+where each statement takes a fresh snapshot -- which is why the patch that waited
+for the lock then reads what the patch ahead of it committed. Under
+`REPEATABLE READ` the waiter would acquire the lock and still read the pre-lock
+state, and the limit check would be back where it started. So the lock is only
+half the mechanism, and raising the isolation level globally would silently
+remove the other half.
+
+The reason a lock is needed at all is that two of this change's promises are not
+expressible as row-level statements. "A node holds at most `MAX_TAGS_PER_NODE`
+tags" is a cardinality bound over rows that no per-row constraint states, and "a
+patch that changes nothing writes nothing" is a judgement about the difference
+between two states. Both must read the collection, and an unserialized read is
+the lost update the row-level statements otherwise avoid: two patches on a node
+holding 63 tags each read 63, each compute 64, both insert, and the node ends
+with 65.
+
+So the guarantee is that **disjoint patches do not lose each other**, and it
+comes from delta semantics -- no statement clobbers a label it does not name --
+not from lock-freedom. Concurrent patches on one node run one after the other
+rather than at once, and two that would jointly cross a maximum do not both
+succeed: the second reads the first's result and is refused. The spec names that
+outcome rather than leaving it to be discovered.
+
+Two alternatives were rejected. **Enforcing the cardinality bound in the
+database** with a trigger counting rows per node would keep the endpoint
+lock-free, but it costs a migration this change otherwise does not need, it
+moves a domain limit into DDL where the domain cannot see it (`MAX_TAGS_PER_NODE`
+is a constant in `domain/nodes.py`, deliberately not configuration), and it does
+nothing for the no-op promise, which would have to be dropped -- a trigger
+cannot tell the service that nothing changed. **Leaving the pre-read
+unserialized and weakening the limit** to something a node may temporarily
+exceed is worse: a maximum a caller crosses by retrying is not a maximum, and
+`PUT` would then refuse writes to a node whose state `PATCH` produced.
+
+The cost is throughput on a single hot node, plus the lock key being a fold of
+the node id into the signed 32-bit advisory space, so two unrelated nodes can
+collide and serialize for nothing. The method is also named for its first
+caller; it locks one node id, and reusing it leaves the port, the SQL adapter,
+and the fake untouched. Its one incidental consequence -- a patch on `X`
+serializing with a move into `X` -- is harmless, and a patch takes exactly one
+lock, so it cannot deadlock with anything.
+
+**The revision is bumped in Python under the lock, and only if something
+changed.** `node.touch(now)` then `uow.nodes.update(node)`, exactly as the
+replace does. A SQL increment (`revision = revision + 1`, the pattern the
+recursive soft delete uses) was the earlier plan, on the grounds that two
+concurrent patches would then get two distinct revisions instead of both writing
+`N + 1`. The lock already produces that -- the second patch reads the node after
+the first commits, so it reads `N + 1` and writes `N + 2` -- and the increment
+carries a defect the pattern hides. The ETag a route publishes is `node.etag`,
+`f'"{id.hex}-{revision}"'` computed from the in-memory `Node`
+(`domain/nodes.py:222`) and reached through `_view` → `NodeDetail` → the `ETag`
+header; a bulk `UPDATE` does not touch that object, so a successful `PATCH`
+would answer with the *pre*-patch ETag and the caller's next `If-Match` would
+`412`. (`soft_delete_subtree` escapes this only because it also calls
+`node.soft_delete(now)` on each domain object -- it bumps in Python too, from a
+value read earlier, which is exactly what a patch must not do outside a lock.)
+Closing the gap would mean returning the new revision from the repository and
+assigning it onto the aggregate: one more moving part for a guarantee the lock
+already gives. So `PATCH` and `PUT` bump the same way, and differ only in that
+`PATCH` does not bump when nothing changed.
 
 **A no-op patch is a success that writes nothing.** Adding a tag the node already
 carries, or removing one it does not, leaves the collection identical: no
@@ -138,24 +209,53 @@ last-writer-detection, which is a legitimate thing to want even here.
 
 **Limits are validated after the merge, against the resulting collection.**
 `MAX_TAGS_PER_NODE` and `MAX_METADATA_PAIRS` bound what a node holds, so a patch
-that would exceed them is refused with the same error a `PUT` gives. The
-`add`/`set` lists themselves are additionally bounded by the same maxima at the
-API edge, since no legitimate request names more entries than a node could hold,
-and an unbounded list is unbounded work before any check runs.
+that would exceed them is refused with the same error a `PUT` gives. The check
+runs inside the critical section described above, against a collection read under
+the lock, which is what makes it a bound rather than an advisory. All four lists
+-- `add`, `remove`, `set`, and the metadata removal keys -- are additionally
+bounded by the same maxima at the API edge, since no legitimate request names
+more entries than a node could hold, and an unbounded list is unbounded work
+before any check runs.
 
 **Tag normalization applies to both directions.** `remove: ["URGENT"]` removes
 `urgent`, because that is the tag -- the stored form is the only form. Metadata
-keys are matched byte for byte in both directions, as they are everywhere else.
+keys are matched byte for byte for *equality* -- which key a set writes, which
+key a removal names, which keys the request duplicates -- as they are everywhere
+else. The one exception is the reserved-prefix test, which is casefolded because
+`validate_metadata` already casefolds it (`key.casefold().startswith(...)`,
+`domain/nodes.py:111`). Every place this change tests that prefix -- the `set`
+list, the removal list, the `replace_metadata` preservation predicate, and the
+filter that keeps reserved pairs out of a response -- casefolds identically. A
+predicate that disagreed with the write-side guard would be a hole in the
+namespace this change exists to close: `remove: ["CyberFS.trusted"]` must be
+refused for the same reason `set` refuses it.
 
-**The reserved namespace survives writes that do not name it.** `remove` refuses
-a `cyberfs.`-prefixed key, and `replace_metadata` now deletes only the
-non-reserved pairs before inserting. Without this, the guard on `PATCH` would be
-theatre: a caller could clear system metadata with a `PUT` of an empty list. The
-alternative -- letting a caller delete reserved keys -- makes the namespace
-useless for its stated purpose, which is metadata CyberFS can trust it wrote.
-Nothing writes such a key today, so the change is invisible in practice and the
-point is that it is true before something depends on it. A caller therefore
-cannot clear a reserved key by any route; CyberFS itself writes through the
+**The reserved namespace survives every write a caller makes, and is invisible to
+one.** `remove` refuses a `cyberfs.`-prefixed key, and `replace_metadata` deletes
+only the non-reserved pairs before inserting. Without the second half the guard
+on `PATCH` would be theatre: a caller could clear system metadata with a `PUT` of
+an empty list. The alternative -- letting a caller delete reserved keys -- makes
+the namespace useless for its stated purpose, which is metadata CyberFS can trust
+it wrote.
+
+Preserving those pairs raises a question the read path has to answer, because
+`metadata_for` selects every row for the node with no key filter
+(`repositories.py:308-314`) and `labels_for` hands the result to every
+`NodeDetail`. Left alone, the moment anything writes a reserved key it appears in
+every `GET /nodes/{id}` and every metadata response, and a client that
+round-trips the object it was just handed back through `PUT` gets a `422`,
+because `validate_metadata` refuses reserved keys. So `labels_for` filters the
+reserved prefix out of the caller-facing metadata. A caller sees exactly the pairs
+it may write, "replace these pairs" still describes what it gets back, and the
+round trip stays valid. The repository read stays unfiltered: that is how CyberFS
+reads its own namespace, and how backup carries it. The rejected alternative --
+returning reserved pairs read-only -- keeps the response a complete picture of the
+table but breaks the echo, and a key a caller can see, cannot write, and cannot
+remove is a worse thing to hand a client than a key it never sees.
+
+Nothing writes such a key today, so both halves are invisible in practice; the
+point is that they are true before something depends on them. A caller cannot
+clear a reserved key by any route, and CyberFS itself writes through the
 repository, not the endpoint.
 
 **No new audit action.** A patch emits `NODE_TAGS_CHANGED` or
@@ -182,18 +282,36 @@ unnecessary and closes the round trip this change exists to remove.
   has both a precondition and an immediate answer.
 
 - **The two verbs bump the revision by different rules** -- `PATCH` only on a
-  real change and via a SQL increment, `PUT` always and via the Python bump.
-  A client reading the code could be surprised.
+  real change, `PUT` always.
   → Mitigation: it is a specified difference, not an accident, with a scenario
-  for each; and unifying `PUT` onto the increment is a small follow-up whose only
-  obstacle is that it changes a shipped endpoint's revision behaviour for no
-  benefit to this change.
+  for each. The mechanism is now the same for both, so the only asymmetry left is
+  the one the two verbs' meanings demand.
 
-- **Concurrent patches on the same key still race**, and last writer wins on
-  that key.
+- **Patches to one node serialize**, so a hot node's label writes queue behind
+  each other, and an unrelated node whose id folds onto the same advisory key
+  queues with it.
+  → Mitigation: the alternative was an unenforceable maximum (see Decisions). A
+  label write holds the lock for a handful of statements with no external call in
+  the critical section, and the change buys back far more round trips than it
+  costs.
+
+- **Concurrent patches on the same key still race**, in the sense that the second
+  to run overwrites the first's value for that key.
   → Mitigation: the blast radius is one key rather than the whole map, which is
-  the entire improvement being claimed. Nothing here promises per-key
-  serialization, and the spec says so rather than implying otherwise.
+  the entire improvement being claimed. Nothing here promises that a caller's
+  value for a key survives another caller's write to the same key, and the spec
+  says so rather than implying otherwise.
+
+- **A metadata search can still name a reserved key**, so once something writes
+  one, a caller who guesses the key -- and, with `value`, guesses the value
+  exactly -- can confirm it on a node they may already see, even though the key
+  is filtered out of every response.
+  → Mitigation: no reserved key exists in any deployment, and search returns
+  nodes, never values, so the leak is an exact-guess oracle over nodes already
+  visible to the caller. Narrowing the search filter is an observable change to a
+  shipped endpoint and belongs to whichever change first writes a reserved key,
+  which will know what secrecy that key actually needs. Recorded here so it is a
+  decision rather than an oversight.
 
 - **A no-op patch returns `200` and looks like a write in a client's logs**
   while leaving no audit record, so an operator reconstructing what happened
@@ -207,8 +325,18 @@ unnecessary and closes the round trip this change exists to remove.
   leave rows behind.
   → Mitigation: no key in that namespace exists in any deployment, so no `PUT`
   can behave differently today; the change is provably inert now and correct
-  later. It is stated in the spec so the response no longer being the complete
-  post-state of the table is a documented property.
+  later. Both halves are stated in the spec: that a reserved pair survives a
+  replace, and that it never appears in a response -- so a caller's view of its
+  own metadata is still complete and still echoable, while the table's post-state
+  is deliberately not what a caller is shown.
+
+- **The no-op's cache exemption needs no change to `caching`.** That requirement's
+  "Invalidation on mutation" drops a node's cached entry when "a node's metadata or
+  content changes", and a no-op patch changes neither, so the exemption follows
+  from the existing requirement rather than carving one out of it -- which is why
+  the delta states it on the partial-update requirement and leaves `caching`
+  alone. Because it is the one guarantee here that a fake cannot show, it is
+  pinned in the tier where Redis is real.
 
 ## Migration Plan
 
@@ -220,12 +348,29 @@ reserved keys, of which there are none. Rolling back means removing the two
 routes; nothing stored by them is unreadable afterwards, since a patched
 collection is indistinguishable from a replaced one.
 
+**A patch on a trashed node is a `404`, and it is already decided.** A trashed
+node is invisible to search, so labelling it has no effect a caller can observe
+until it is restored, and the question needed no judgement: `_authorize` raises
+`NotFoundError` whenever `node.is_deleted` (`application/nodes.py:104-114`), the
+same response as "no permission" so a probe cannot tell a trashed node from an
+invisible one. A patch goes through `_authorize` like `rename` and `move`, so it
+answers `404` without any code of its own. It is written into the spec so the
+behaviour is specified rather than emergent, and pinned with a test.
+
 ## Open Questions
 
-**Should a patch be allowed on a trashed node?** A trashed node is invisible to
-search, so labelling it has no effect a caller can observe until it is restored,
-and `rename` and `move` already refuse. Leaning toward refusing with the same
-error for the same reason -- consistency with the neighbouring mutations beats a
-capability nobody has asked for -- but it should be settled against the actual
-behaviour of the authorization path during implementation, and pinned with a
-test either way.
+None outstanding.
+
+## Notes on points raised in review
+
+Two review observations were accurate in substance but wrong in detail, and the
+detail matters to whoever implements this:
+
+- The ETag is `Node.etag`, not `Node.version_token`; there is no
+  `version_token`. The staleness argument is unaffected -- it is built from
+  `revision` either way.
+- `soft_delete_subtree` is not an example of a SQL increment leaving the
+  aggregate stale: it re-applies the bump to each domain object in Python
+  afterwards. It is therefore the wrong pattern to copy for a patch, for the
+  opposite reason to the one given -- not because it ignores the new value, but
+  because it recomputes it from a value read earlier.

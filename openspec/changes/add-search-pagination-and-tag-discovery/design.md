@@ -23,6 +23,17 @@ So the mechanism exists and is exercised in production by folder listing, the
 admin user list, the audit feed, and the activity feed. This change reuses it
 rather than adding a second one.
 
+Two facts about the existing mechanism shape the decisions below. First, the
+codec lives in the adapter: `encode_cursor`/`decode_cursor` are module-level
+functions in `adapters/outbound/db/repositories.py`, and the application layer
+has no way to reach them — nothing under `application/` imports `adapters/`, and
+`tests/unit/test_layering.py` guards the pure layers. Second, the two bounds on a
+page are not one bound: the route declares
+`limit: Annotated[int, Query(ge=1, le=1000)] = 100`, so FastAPI refuses an
+oversized limit before any use case runs, while `NodeService` separately clamps
+with `min(limit, self._page_size_max)` against the configured `PAGE_SIZE_MAX`
+(default `1000`, a setting, not a constant).
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -72,9 +83,23 @@ rather than adding a second one.
 - **Paginating `GET /api/v1/shared-with-me`.** It shares the `SearchResults`
   schema and has the same unbounded-result problem. Fixing it here would smuggle
   a `sharing` change into a `file-storage` one.
-- **Replacing the routes' literal `limit` default of `100` with
-  `PAGE_SIZE_DEFAULT`.** The same literal appears on `list_children`; changing
-  one and not the other trades a small inconsistency for a worse one.
+- **Deriving the routes' `limit` bounds from settings.** Both the default `100`
+  and the ceiling `le=1000` are literals on the route: the same ceiling appears on
+  `list_children`, the three admin listings, and the activity feed, and the same
+  default on `list_children` and the admin listings. Changing them on the search
+  route alone trades a small inconsistency for a worse one,
+  and deriving a FastAPI `Query` bound from `Settings` means the OpenAPI schema
+  stops being a static property of the code. Both stay; see "The page bound has
+  two layers" below for what that means for the spec.
+- **Making a descendant of a shared folder findable by search.** Search's scope
+  predicate is `owner_id = <caller> OR id IN (<active grant node ids>)` — direct
+  grant rows only. Read authorization, by contrast, resolves through an ancestor
+  walk, so a file inside a folder shared with the caller is readable with `GET`
+  and invisible to search. Closing that gap means an ancestor-aware scope
+  predicate (a recursive CTE per search, or a materialized closure), which is a
+  query-shape and index decision of its own with a real cost model. This change
+  states the current behaviour as a scenario instead of quietly widening it —
+  see "Search's scope is the granted node itself" below.
 
 ## Decisions
 
@@ -86,6 +111,32 @@ walk shifts every later row, so pages silently duplicate or skip. Keyset paging
 has neither problem, and this codebase already has exactly one pagination
 mechanism. A second one would be the thing future readers have to hold in their
 heads.
+
+Concretely, "reuse" means: the same `Page[T]` return type, the same `_paginate`
+sentinel-trimming helper, the same `\x1f`-joined base64 cursor payload, and the
+same `ValidationError → 422` mapping. The only genuinely new pieces are the
+filter fingerprint and a `(normalized_name, id)` predicate modelled on
+`_child_cursor_predicate`. `list_children`'s signature, its cursor payload, and
+its behaviour are untouched, so a listing added in parallel — the trash view is
+building a cursor-paginated `list_trash_entries` on the `NodeRepository` port right
+now — keeps working against `_paginate` and the cursor codec exactly as it does
+today.
+Where this change moves the codec (below), it re-exports it from its old home for
+that reason.
+
+**The page bound has two layers, and the spec describes the pair rather than
+either one.** A limit above the route's `le=1000` never reaches a use case:
+FastAPI answers `422` first. A limit below that ceiling but above a configured
+`PAGE_SIZE_MAX` does reach the use case and is clamped by
+`min(limit, self._page_size_max)`. With the default settings the two coincide at
+`1000`, so the clamp is dead code unless an operator lowers `PAGE_SIZE_MAX` —
+which is exactly what that setting is for. Writing "a limit above `PAGE_SIZE_MAX`
+SHALL return at most `PAGE_SIZE_MAX` results" as a scenario would therefore have
+been false on a default deployment, because `limit=1001` is refused rather than
+reduced. The scenario says instead that an over-large limit is either refused or
+reduced, never served in full, and that a reduced page still carries a cursor
+when matches remain. Both halves are then testable: the refusal at the route, the
+clamp at the use case.
 
 **The sort key gains `id`, and that is the real fix.** `ORDER BY
 normalized_name` is not a total order over a search result: names are unique
@@ -159,6 +210,80 @@ issued by the previous deployment are refused with `422` during a rollout.
 That is the same class of breakage as a cache schema bump, cursors live for
 seconds, and the refusal is loud rather than silent.
 
+**The fingerprint is computed and compared in one place, and that place is not
+the repository.** Two layers could plausibly own the comparison, and picking
+wrong makes the rule untestable:
+
+- *In the adapter.* `SqlNodeRepository.search` decodes the cursor, compares the
+  digest, raises. Rejected: the fake node repository would then need its own
+  copy of the codec and its own copy of the fingerprint, so every unit test of
+  the refusal would assert against the copy instead of against production code.
+  `FakeNodeRepository.list_children` ignores `cursor` outright today and never
+  sets `next_cursor`, which is how much fake there would be to write. That is
+  precisely the failure mode the first risk bullet below warns about, aimed at
+  the one rule the fake could otherwise pin honestly.
+- *In the use case, over a shared codec.* Chosen. `NodeService.search` builds the
+  filter-set value object, and when a cursor is present decodes it and compares
+  the digest it carries against the digest that filter set implies, raising
+  `ValidationError` on either a malformed cursor or a mismatch. The repository is
+  handed the filter set and an already-decoded sort key
+  (`normalized_name`, `id`), and its job is the `WHERE` predicate and the
+  `ORDER BY` — no cursor parsing, no digest.
+
+That requires the codec to be reachable from `application/`, so
+`encode_cursor`/`decode_cursor` move to `src/cyberfs/domain/pagination.py` — the
+pure layer that already owns the `Page` type they serve — joined by a small keyed
+variant that prepends a fingerprint and refuses a payload whose fingerprint does
+not match the one supplied. `adapters/outbound/db/repositories.py`
+re-exports both names, so `activity_queries.py`, the audit feed, the admin
+listings, and the trash listing under construction see no change at all — the
+move is a relocation, not a rewrite, and the base64/`\x1f` payload format is
+byte-identical. The keyed variant is deliberately generic: any future listing
+whose scope lives in the query string rather than the path can bind its cursor
+the same way, and the tag inventory in this very change is its second caller.
+
+The fake's remaining obligation is small and honest: order by
+`(normalized_name, id)`, slice after the decoded key, and build `Page` with the
+shared codec. It reimplements neither the fingerprint nor the cursor format.
+
+**Search's scope is the granted node itself, not the subtree under it, and this
+change writes that down.** `file-storage/spec.md`'s requirement prose promises
+searching "within the subtrees a caller may access", while its two scope
+scenarios say "only nodes the caller owns or has been granted" — and the code
+implements the scenarios: `owner_id = <caller> OR id IN (<active grant node
+ids>)`. A grant is recorded on the root of a shared subtree, not on every
+descendant (`shared_with_me` documents exactly that: "the roots of each shared
+subtree, not every inherited descendant"), so a file inside a shared folder is
+readable with `GET` and absent from search. The prose reads like a promise the
+code does not keep.
+
+This change adds a scenario saying the narrow thing plainly — the granted node
+itself appears, its descendants do not — so the gap is a documented, testable
+decision rather than a discrepancy a reader has to discover by running the query.
+It is a clarification, not a narrowing: no scenario changes meaning and no
+behaviour changes. Widening it is a non-goal above, with the reason.
+
+Two consequences follow. The pagination risk analysis has to stop claiming that
+paging makes a shared subtree cheap to enumerate through search — it cannot be
+enumerated through search at all — and the tag inventory has to be scoped by the
+same expression, not by an expression that happens to agree today.
+
+**One scope predicate, used by both search and the inventory.** The inventory is
+scoped exactly like search: owned, or an ACTIVE grant on the node itself, and not
+trashed. Any other scoping would be a second access model to maintain. Stating
+that is not enough, though, because two hand-written predicates drift and the
+drift is invisible in unit tests — `FakeNodeRepository.search` ignores `subject`
+entirely, so no fake can catch a scope difference, and the divergence would show
+up only on shared trees in production. So the expression is extracted into one
+private helper on `SqlNodeRepository` that both `search` and `tag_counts` call,
+and the spec states the agreement as an invariant: a tag the inventory reports
+with count *n* returns *n* nodes when used as a filter. Counts are therefore
+per-caller, not global, and the spec says that too — otherwise someone will treat
+the number as a property of the tag and be confused when two users disagree about
+it. An integration test asserts the agreement for a node reached through a grant,
+not only for owned nodes, because owned nodes are the case where two different
+predicates would agree anyway.
+
 **`tag_match=all|any`, defaulting to `all`, governing only the tags.** The
 existing AND semantics were a deliberate decision and stay the default, so no
 existing query changes meaning. The case for finally adding `any` is that
@@ -198,14 +323,6 @@ for a group-by, and give the response two unrelated pagination stories. A
 separate `GET /api/v1/tags` is one indexed aggregate that answers the question
 being asked.
 
-**The inventory is scoped exactly like search: owned, or an ACTIVE grant.** Any
-other scoping would be a second access model to maintain and reason about. The
-invariant this buys is worth stating as a scenario: a tag the inventory reports
-with count *n* returns *n* nodes when used as a filter. Counts are therefore
-per-caller, not global, and the spec says that too — otherwise someone will
-treat the number as a property of the tag and be confused when two users
-disagree about it.
-
 **The inventory is ordered by tag ascending, not by count descending.** Count
 order is what a "top tags" widget wants, and it is unsafe under a cursor: a
 count changes whenever *any* node in reach is labelled, so a tag can move across
@@ -224,6 +341,18 @@ filter already matches. The inventory's cursor is bound to its filter set by the
 same rule as search's, so `prefix` cannot be changed mid-walk either; one rule,
 both endpoints.
 
+The prefix is escaped with `_escape_like` before it is interpolated, the same way
+the name search escapes its term. `normalize_tag` only applies NFC, strips, and
+casefolds — it does not touch `%` or `_` — so an unescaped `?prefix=%` would
+return the entire vocabulary and `?prefix=a_` would match `ab`. That is not a
+scope escape, since the aggregate is scoped independently, but it is the endpoint
+failing its own "tags beginning with it" contract, and it is the kind of thing
+that quietly becomes a documented feature. A scenario pins the literal match so
+nobody "fixes" the escaping away later, and the test that proves it is an
+integration test: a fake matching a prefix with Python's `startswith` treats `%`
+literally whether the SQL escapes it or not, so only real SQL can catch a missing
+`_escape_like`.
+
 **Zero-count tags do not exist.** The aggregate is over live, in-scope nodes, so
 a tag whose last carrier is trashed or purged simply stops appearing. There is
 no tag entity to leave behind — `node_tags` rows are per-node and cascade on
@@ -235,10 +364,15 @@ datasets *exactly*, so caching this would mean modifying that requirement, and
 the invalidation obligation ("every mutation SHALL invalidate the cache entries
 it can affect, within the same request") is nasty here: one `PUT /tags` on one
 shared node invalidates the inventory of the owner and of every subject holding
-a grant anywhere above it. For a single indexed `GROUP BY` over an index-only
-scan, that is a large amount of correctness risk bought with a small amount of
-latency. Grant listings and audit records are already read straight from
-Postgres for comparable reasons.
+a grant anywhere above it. That is a large amount of correctness risk bought with
+an unmeasured amount of latency: the aggregate is one `GROUP BY` served by
+`ix_node_tags_tag`, but it joins `node_tags` back to `nodes` to apply
+`deleted_at IS NULL` and the scope, so it is not an index-only scan and this
+change does not claim it is. Task 2.9 measures it. The conclusion holds either
+way — if the aggregate turns out to be expensive, the answer is the index that
+`EXPLAIN` asks for, proposed on its own, not a cache with a fan-out invalidation
+rule. Grant listings and audit records are already read straight from Postgres
+for comparable reasons.
 
 **No new `AuditAction`.** The `file-storage` requirement "File operations are
 auditable" requires a record when content is *downloaded*, which is what lets an
@@ -266,8 +400,10 @@ without a measurement to justify it.
   that the walk is exhaustive.
   → Mitigation: exactly-once-across-pages, the duplicate-name tie-break, and
   cursor/order agreement are proven in integration against real Postgres. The
-  fake's job is limited to the use-case-level rules (filter fingerprint
-  refusal, limit clamping, unfiltered-search refusal).
+  fake's job is limited to the use-case-level rules (filter fingerprint refusal,
+  limit clamping, unfiltered-search refusal) — and those rules live in the
+  application layer over the shared cursor codec, so the fake holds no copy of the
+  fingerprint or the cursor format for a test to accidentally assert against.
 
 - **The fake also cannot model the access scope**, because the fake node
   repository has no view of grants and `FakeUnitOfWork` models no foreign keys.
@@ -278,13 +414,17 @@ without a measurement to justify it.
   three for the tag inventory — is an integration test. This is the existing
   posture for search and is not made worse; it is made explicit.
 
-- **Pagination makes exhaustive enumeration of a large shared subtree cheap** for
-  a recipient holding one grant near its root.
-  → Mitigation: none needed, and this is the reasoning, not a hand-wave: the
-  scope predicate is unchanged, and such a recipient can already enumerate the
-  same subtree by walking `list_children`, which is itself paginated. The change
-  reduces the number of requests, not the set of reachable nodes. If that set is
-  wrong, the fix is the grant, not the pagination.
+- **Pagination lets a caller collect everything search can return for a filter,
+  in fewer requests than before.** Worth stating plainly, and worth stating
+  narrowly: search returns owned nodes and the granted nodes themselves, so this
+  is not a way to enumerate a shared *subtree* — the descendants of a shared
+  folder are not in search's scope at all (see the scope decision above). What a
+  recipient gains is the remainder of a page of matches they were already
+  entitled to and could already have reached by walking `list_children`, which is
+  itself paginated.
+  → Mitigation: none needed. The scope predicate is unchanged, so the set of
+  reachable nodes is unchanged; only the number of requests to cover it falls. If
+  that set is wrong, the fix is the grant, not the pagination.
 
 - **The tag inventory aggregates a co-owner's vocabulary.** A recipient sees the
   tags on nodes shared with them, counted together with their own.
@@ -296,11 +436,16 @@ without a measurement to justify it.
 
 - **The unanchored `ILIKE '%term%'` still cannot use an index**, so the first
   page of a name search is a scan of the scoped rows.
-  → Mitigation: unchanged by this change, and each *subsequent* page is cheaper
-  than the first, because the cursor predicate adds `normalized_name > …`, which
-  the existing index can use to start the scan where the last page ended. Worth
-  measuring on a realistic corpus; a trigram index is the known remedy and is
-  its own change. Content search is not the remedy and stays out.
+  → Mitigation: unchanged by this change — the first page costs what a search
+  costs today. The hope is that a *subsequent* page costs less, because the cursor
+  predicate adds `normalized_name > …` and the planner can start the scan where
+  the last page ended; that is a prediction, not a claim. Two things work against
+  it: the scope predicate is an `OR` (`owner_id = … OR id IN (…)`) and the keyset
+  predicate is itself a three-way `OR` (see `_child_cursor_predicate`), and either
+  can cost an index-driven start. Task 2.9 runs `EXPLAIN` on a seeded corpus and
+  records what the planner actually chose. A trigram index is the known remedy if
+  it is needed, and it is its own change. Content search is not the remedy and
+  stays out.
 
 - **`tag_match=any` widens results, and a client that flips the mode mid-walk
   gets a `422` rather than a merged result.**
@@ -314,6 +459,26 @@ without a measurement to justify it.
   so decoders that ignore unknown fields — including the generated clients this
   project's OpenAPI schema feeds — are unaffected. A client that pins the schema
   strictly regenerates.
+
+## Review Claims Rejected
+
+One claim from the adversarial review was checked against the code and does not
+hold, and acting on it would have made the delta worse:
+
+- **"The new scope scenarios narrow the existing requirement."** They do not.
+  `file-storage/spec.md` already carries two normative scenarios stating the
+  narrow scope — "Search scoped to accessible nodes" ("only nodes the caller owns
+  or has been granted") and "Tag and metadata search obeys the access scope"
+  (same words). The new scenarios restate that scope and add the word *active*,
+  which matches both the code (`pending.is_(False)`) and the existing
+  pending-grant behaviour. Nothing is frozen that was not already normative. What
+  *is* loose is the requirement prose at the top of "Listing, search, and
+  metadata" — "within the subtrees a caller may access" — and the fix for a
+  discrepancy between prose and scenarios is not to rewrite the scenarios but to
+  say explicitly which one the system implements. That is what the added
+  descendant scenario does. The rest of the same finding — that the descendant
+  case is unspecified, and that the shared-subtree risk bullet described
+  behaviour search does not have — was correct and is addressed above.
 
 ## Migration Plan
 

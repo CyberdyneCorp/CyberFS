@@ -26,17 +26,26 @@ it finds there, and a namespace a user can empty is not trustworthy.
 - **`PATCH /api/v1/nodes/{node_id}/tags`** taking `add` and `remove` lists.
 - **`PATCH /api/v1/nodes/{node_id}/metadata`** taking `set` pairs and `remove`
   keys.
-- Both **merge at the row level**, not by read-modify-write: a tag is inserted
-  with `ON CONFLICT DO NOTHING` and deleted by name, so two concurrent patches
-  naming different tags both survive. This is the point of the change.
+- Both **write at the row level**: a tag is inserted with
+  `ON CONFLICT DO NOTHING` and deleted by name, so a patch never touches a label
+  it did not name and two patches naming different tags both survive. This is the
+  point of the change.
 - **A patch with no effect changes nothing** -- no revision bump, no audit
   record, no cache invalidation. Adding a tag a node already carries is a
   success, not a write.
 - **Limits are checked after the merge.** Adding one tag to a node already at
   `MAX_TAGS_PER_NODE` is refused with the same error a `PUT` would give.
+- **Patches to one node serialize** on the advisory lock `move` already uses.
+  Checking a per-node maximum, and deciding that a patch changed nothing, both
+  require reading the collection first, and an unserialized read is the lost
+  update this endpoint exists to remove. Disjoint patches still both land; they
+  simply land one after the other, and two that would jointly cross a maximum do
+  not both succeed. design.md records why the alternative -- a counting trigger in
+  the database -- was rejected.
 - **The reserved namespace becomes genuinely reserved**: `remove` refuses a
-  `cyberfs.`-prefixed key, and `PUT` now *preserves* pairs in that namespace
-  instead of deleting them.
+  `cyberfs.`-prefixed key, `PUT` now *preserves* pairs in that namespace instead
+  of deleting them, and no response shows them -- so the metadata a caller is
+  handed stays exactly what it may write back.
 - `EDITOR` to write, `If-Match` honoured, revision bumped, activity recorded --
   all exactly as `PUT`, reusing `NODE_TAGS_CHANGED` and
   `NODE_METADATA_CHANGED`.
@@ -54,7 +63,8 @@ None. This extends `file-storage`.
 ### Modified Capabilities
 
 - `file-storage`: gains "Partial label updates", and "Key/value metadata" gains
-  the statement that the reserved namespace survives a write it does not name.
+  the statements that the reserved namespace survives every write a caller makes
+  and never appears in a response to one.
 
 ## Impact
 
@@ -64,12 +74,12 @@ None. This extends `file-storage`.
   delta, reusing the existing constants; a helper that refuses a request naming
   the same tag or key in both directions.
 - `src/cyberfs/adapters/outbound/db/repositories.py` -- `add_tags`,
-  `remove_tags`, `set_metadata`, `remove_metadata_keys`, and a revision bump
-  expressed as a SQL increment so concurrent patches cannot lose one; the
-  existing `replace_metadata` learns to leave reserved keys alone.
+  `remove_tags`, `set_metadata`, `remove_metadata_keys`; the existing
+  `replace_metadata` learns to leave reserved keys alone.
 - `src/cyberfs/domain/ports/repositories.py` and `tests/unit/fakes.py` -- the
-  four new repository methods.
-- `src/cyberfs/application/nodes.py` -- `patch_tags` and `patch_metadata`.
+  four new repository methods. The lock the patches take is already on the port.
+- `src/cyberfs/application/nodes.py` -- `patch_tags` and `patch_metadata`, and
+  `labels_for` stops handing reserved pairs to a caller.
 - `src/cyberfs/adapters/inbound/api/schemas.py` and `routers/nodes.py` -- the
   two request bodies and the two routes.
 

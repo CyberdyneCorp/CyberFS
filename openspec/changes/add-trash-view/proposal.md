@@ -12,77 +12,92 @@ charged to their quota for `TRASH_RETENTION_DAYS`, the row is still there, the
 restore use case works, and there is no way to learn the id. Then the purge job
 destroys it. The spec says recoverable; the API says otherwise.
 
-Closing the loop exposes a second contradiction immediately. Delete cascades:
-`soft_delete_subtree` trashes a folder and every descendant. **Restore does
-not** -- `NodeService.restore` clears `deleted_at` on one row. Restoring a
-folder therefore brings back an empty folder and leaves its contents trashed and
-(today) unreachable forever. The quota code already assumes otherwise: restore
-sums the whole subtree with `include_deleted=True` and moves all of those bytes
-out of the trashed bucket, so reported usage counts descendants as live while
-their rows say trashed, until the reconciliation job disagrees. A trash listing
-that offers "restore" on a folder has to actually restore the folder.
+The cascading restore this proposal was originally written to fix has since
+landed on `main`: `NodeRepository.restore_subtree` lifts the entry plus every
+descendant sharing its `deleted_at`, `NodeService.restore` returns to the live
+bucket only the bytes of the rows it actually cleared, `soft_delete_subtree`
+returns the rows it moved so the delete charges only those, and `_subtree_bytes`
+is gone. This change **inherits** all of it and re-proposes none of it; the
+scenarios pinning it are already in `openspec/specs/file-storage/spec.md`. What
+remains missing is the view itself -- and one consequence of exposing it: a
+restore that can be refused. "Name reusable after deletion" lets a live sibling
+take a trashed node's name, and `restore` still calls `_ensure_name_free`
+(`application/nodes.py:434`). Unreachable while no caller could find the id; a
+routine outcome once the trash is listable, and unspecified today.
 
 ## What Changes
 
 - **`GET /api/v1/trash`** lists the caller's trashed nodes, newest deletion
-  first, paginated like every other listing.
+  first, paginated like every other listing, and reports how many entries the
+  trash holds in total -- the one number the purge guard below requires.
 - **One entry per delete, not one per row.** A trash entry is a trashed node
   whose parent is not itself trashed. Deleting a 400-node folder produces one
   entry, not 400. Each entry reports its original path, when it was deleted, when
   the retention sweep will destroy it, and the total bytes and node count it
   would restore -- so the entry is self-contained and the client never has to
   read a trashed node individually.
-- **Restore restores the subtree.** Restoring an entry brings back every node
-  that the same delete trashed, identified by the deletion timestamp they share.
-  A node deleted separately *before* its parent stays deleted, and reappears as
-  its own trash entry once its parent is live again.
+- **A restore that cannot reoccupy its name is refused, not half-applied.**
+  Restoring an entry whose name a live sibling has taken since the delete
+  answers `409 name_taken` and restores nothing. The owner renames the occupant
+  (or purges the entry) and retries.
 - **`POST /api/v1/trash/purge`** empties the trash, guarded: the caller states
-  how many entries they intend to destroy and the call is refused if the trash
-  does not currently hold exactly that many, so a bulk irreversible operation
-  cannot be issued by a client that has not looked. Bounded per call, reporting
-  what remains.
+  how many entries the trash holds -- the count the listing reports -- and the
+  call is refused if it holds a different number, so a bulk irreversible
+  operation cannot be issued by a client that has not looked. Bounded by nodes
+  destroyed rather than entries, so one call cannot strip an unbounded tree, and
+  reporting what remains.
 - The trash is the owner's and nobody else's. A share recipient sees nothing --
   grants stop conferring access at delete. No administrator surface is added.
 
 Not changing: `DELETE /api/v1/nodes/{node_id}` stays a soft delete;
 `POST /api/v1/nodes/{node_id}/purge` keeps its shape, its must-be-trashed `409`,
 and its owner-or-admin rule; `PurgeJob` and the 30-day sweep are untouched;
-trashed nodes remain absent from folder listings, search, and the S3 surface.
+trashed nodes remain absent from folder listings, search, and the S3 surface;
+restore keeps its cascading semantics and its one `NODE_RESTORED` record.
 
 ## Capabilities
 
 ### New Capabilities
 
-None. This implements a `file-storage` requirement that already exists and fixes
-a restore that already contradicts it.
+None. This implements a `file-storage` requirement that already exists.
 
 ### Modified Capabilities
 
-- `file-storage`: "Soft delete, restore, and purge" gains the cascading restore,
-  the timestamp rule that decides what a restore takes with it, and the quota
-  consequence. Two requirements are added -- "Trash listing" and "Emptying the
-  trash" -- rather than folding a caller-facing listing into "Listing, search,
-  and metadata", whose whole subject is the *live* tree.
+- `file-storage`: "Soft delete, restore, and purge" gains the name-collision
+  refusal on restore and the root fallback for an entry restored beneath a
+  still-trashed parent; its cascading-restore and quota scenarios are reproduced
+  unchanged from the living spec, not restated as new. Two requirements are added
+  -- "Trash listing" and "Emptying the trash" -- rather than folding a
+  caller-facing listing into "Listing, search, and metadata", whose whole subject
+  is the *live* tree.
 
 ## Impact
 
 **Affected code:**
 
 - `src/cyberfs/domain/ports/repositories.py` -- `NodeRepository` gains a
-  trash-entry listing and an aggregate for the bytes and node counts of a page of
-  entries. Both are query shapes, not a query builder, in keeping with the port's
-  existing style.
+  trash-entry listing, a total-entry count, and an aggregate for the bytes and
+  node counts of a page of entries. All three are query shapes, not a query
+  builder, in keeping with the port's existing style. `restore_subtree` is
+  already there.
 - `src/cyberfs/adapters/outbound/db/repositories.py` -- the listing (a
   `deleted_at IS NOT NULL` scan narrowed by "parent is absent or live"), the
-  page-wide recursive aggregate, and a subtree restore that clears `deleted_at`
-  by shared timestamp.
+  matching count, and the page-wide recursive aggregate.
 - `src/cyberfs/adapters/outbound/db/models.py` + a migration -- one partial index
   on `(owner_id, deleted_at)` where `deleted_at IS NOT NULL`. The existing
   `ix_nodes_deleted_at` is not owner-scoped; it serves the retention sweep, which
   reads across all users. No new column.
-- `src/cyberfs/application/nodes.py` -- a `trash` read use case, a corrected
-  `restore`, and `empty_trash`, which reuses `application/purge.py` rather than
-  re-deriving the destructive sequence.
+- `src/cyberfs/domain/nodes.py` -- `TRASH_PURGE_NODE_BUDGET`, the ceiling on how
+  many nodes one empty-trash call may destroy. A limit, so a constant here rather
+  than a setting, like the tag and metadata limits beside it.
+- `src/cyberfs/domain/errors.py` -- `TrashCountMismatchError(ConflictError)`,
+  code `trash_count_mismatch`, so a client can tell the guard refusing it from
+  any other `409`.
+- `src/cyberfs/application/nodes.py` -- a `trash` read use case, `empty_trash`
+  (which reuses `application/purge.py` rather than re-deriving the destructive
+  sequence), the `NODE_PURGED` emission shared between `purge` and `empty_trash`,
+  and one correction to the inherited cascading restore: it must invalidate the
+  rows it lifted, not only the entry.
 - `src/cyberfs/adapters/inbound/api/` -- `GET /api/v1/trash`,
   `POST /api/v1/trash/purge`, and their schemas.
 - `src/cyberfs/domain/audit.py` -- `TRASH_EMPTIED`, deliberately **not** added to
@@ -93,17 +108,25 @@ a restore that already contradicts it.
 
 **Emptying the trash is irreversible and it is bulk.** The guards are: it touches
 only nodes already deliberately deleted; the caller must supply the entry count
-it expects, which is refused on mismatch, so a stale or unread client cannot
-fire it; the work is bounded per call; every node destroyed produces the same
-retained security record an individual purge would, plus one naming the batch.
-It cannot reach a live node -- it purges nothing that is not already trashed.
+the trash currently holds, which is refused on mismatch, so a stale or unread
+client cannot fire it; the work is bounded by nodes destroyed, not by entries, so
+no single call can strip an unbounded tree; every entry destroyed produces the
+same retained `NODE_PURGED` security record an individual purge of that entry
+would, plus one `TRASH_EMPTIED` naming the batch. It cannot reach a live node --
+it purges nothing that is not already trashed.
 
-**Restoring a folder changes behaviour for existing deployments.** Any tree
-restored before this change has descendants still sitting with `deleted_at` set;
-after the change they become their own trash entries and are restorable
-individually. That is a strict improvement over invisible, but it means an
-operator may see trash entries appear for deletions they thought were resolved.
-`docs/operations.md` should say so.
+**`purge_subtree` emits no audit records**, and neither does `purge_one`
+(`application/purge.py`): the only `NODE_PURGED` emitter is `NodeService.purge`,
+one record per call. So `empty_trash` emits its own per-entry records, through
+the same helper as `purge`, and purge audit granularity stays one record per
+entry.
+
+**Existing deployments may see new trash entries.** Any tree restored *before*
+the cascading restore landed has descendants still sitting with `deleted_at` set;
+the listing's collapse rule makes them their own entries, so they become visible
+and restorable rather than invisible and doomed. That is a strict improvement,
+but it means an operator may see trash entries for deletions they thought were
+resolved. `docs/operations.md` should say so.
 
 **The trash listing reveals nothing new.** It is owner-scoped, and an owner can
 read the names, sizes, and paths of their own nodes already. It stays off the
@@ -112,6 +135,6 @@ and enabling that gate is audited; a trash listing for administrators would be
 an ungated channel for exactly the thing that gate exists to withhold.
 
 **No new configuration.** `TRASH_RETENTION_DAYS` and `PAGE_SIZE_MAX` already
-exist and are what the listing reports and bounds itself by. `TRASH_EMPTIED` is
-a new value in an existing audit-action column; the only schema change is one
-index.
+exist and are what the listing reports and bounds itself by; the purge budget is
+a domain constant. `TRASH_EMPTIED` is a new value in an existing audit-action
+column; the only schema change is one index.

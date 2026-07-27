@@ -50,6 +50,15 @@ nobody uses.
 - **An explicit any-of mode for tags.** `tag_match=all|any`, defaulting to
   `all`, so today's behaviour is unchanged. The mode governs only how tags
   combine with each other; name and metadata filters keep ANDing.
+- **One clarification, no behaviour change: a grant makes the granted node
+  findable, not the subtree under it.** Search's scope predicate matches direct
+  grant rows, while read authorization resolves through an ancestor walk, so a
+  file inside a shared folder is readable with `GET` today and absent from
+  search today. The requirement prose currently says "within the subtrees a
+  caller may access", which reads like a promise the code does not keep. This
+  change corrects the prose and pins the actual behaviour with a scenario, so it
+  is a decision on the record rather than a discrepancy. Widening the scope is
+  deliberately out of scope (design.md).
 
 Not changing: what search matches, who can see what, or the invariant that
 **file content is never indexed or matched**. There is no new table, no new
@@ -65,11 +74,15 @@ it.
 
 ### Modified Capabilities
 
-- `file-storage`: "Searching by tag and metadata" replaces the
-  "Results stay bounded" scenario with a bound that has a way out of it, and
-  gains the any-of tag mode next to the existing all-of semantics where a
-  reader will look for it. Two requirements are added: "Paginated and ordered
-  search results" and "Tag discovery".
+- `file-storage`: "Searching by tag and metadata" points its bound at the new
+  reachability rule instead of restating it, gains the any-of tag mode next to
+  the existing all-of semantics where a reader will look for it, and gains a
+  scenario stating that a grant makes the granted node findable but not its
+  descendants. "Listing, search, and metadata" has its scope prose corrected to
+  match its own scenarios and the code, and gains a scenario withholding the
+  content digest from search results and from the tag inventory. Two
+  requirements are added: "Paginated and ordered search results" and
+  "Tag discovery".
 
 No other capability is touched. In particular `caching/spec.md` is deliberately
 left alone: the tag inventory is not cached (see design.md).
@@ -78,22 +91,34 @@ left alone: the tag inventory is not cached (see design.md).
 
 **Affected code:**
 
+- `src/cyberfs/domain/pagination.py` — **new**, and the one piece other changes
+  will touch: `encode_cursor`/`decode_cursor` move here from the adapter, in the
+  same byte-identical payload format, joined by a keyed variant that binds a
+  cursor to a fingerprint. The application layer cannot import the adapter, so
+  the codec has to live somewhere both layers may reach for the fingerprint to be
+  compared where a unit test can see it. Written generically, so the trash listing
+  being built in parallel and any later query-string-scoped listing can reuse it.
 - `src/cyberfs/adapters/outbound/db/repositories.py` — `SqlNodeRepository.search`
-  returns a `Page[Node]`, gains the `(normalized_name, id)` order and the
-  matching cursor predicate, and gains a tag-inventory query. The existing
-  `_paginate` and `encode_cursor`/`decode_cursor` helpers do the work; the only
-  new piece is the filter fingerprint carried inside the cursor.
-- `src/cyberfs/domain/ports/repositories.py` — the `NodeRepository.search`
-  signature returns `Page[Node]` and takes a `cursor`; a `tag_counts` method is
-  added.
-- `src/cyberfs/application/nodes.py` — the search use case threads the cursor
-  through and validates it against the filters; a tag-inventory use case is
-  added.
+  returns a `Page[Node]`, gains the `(normalized_name, id)` order and the matching
+  cursor predicate built from a decoded key, and gains a tag-inventory query. The
+  existing `_paginate` does the trimming. `encode_cursor`/`decode_cursor` are
+  re-exported from their old names so every existing caller — `activity_queries`,
+  the audit feed, the admin listings, the trash listing under construction — needs
+  no edit. The scope predicate it builds inline today becomes a private helper
+  shared with the inventory.
+- `src/cyberfs/domain/ports/repositories.py` — `NodeRepository.search` returns
+  `Page[Node]` and takes the filter-set object plus an already-decoded sort key
+  rather than a raw cursor; a `tag_counts` method is added on the same terms.
+- `src/cyberfs/application/nodes.py` — the search use case builds the filter set,
+  decodes the cursor, refuses a fingerprint mismatch, and passes the repository a
+  decoded key; a tag-inventory use case is added.
 - `src/cyberfs/adapters/inbound/api/routers/nodes.py` and `schemas.py` — the
   search route answers with `NodePage`, gains `cursor` and `tag_match`; a
-  `GET /api/v1/tags` route and a `TagPage` schema are added.
-- `tests/unit/fakes.py` — the fake node repository must order and paginate the
-  same way, or unit tests will pass while the SQL is wrong.
+  `GET /api/v1/tags` route and a `TagPage` schema are added. The `limit`
+  parameter's declared bounds are left exactly as they are.
+- `tests/unit/fakes.py` — the fake node repository must order and slice the same
+  way, or unit tests will pass while the SQL is wrong. It reimplements neither the
+  cursor format nor the fingerprint: both are production code it calls.
 
 **No schema change.** Nothing is created, dropped, or backfilled, so there is
 nothing to roll back beyond the code.
@@ -110,10 +135,11 @@ optional. The only behavioural difference for an existing client is that a
 truncated result now says so.
 
 **The scope is untouched, so nothing new becomes reachable.** Search still
-returns only nodes the caller owns or holds an ACTIVE grant on, still excludes
-trashed nodes, and a pending grant still confers nothing. Pagination lets a
-caller reach the rest of what was always theirs to reach, in fewer requests
-than walking the tree — not more than they could reach before.
+returns only nodes the caller owns or holds an ACTIVE grant on — the granted node
+itself, not its descendants — still excludes trashed nodes, and a pending grant
+still confers nothing. Pagination lets a caller reach the rest of what was always
+theirs to reach, in fewer requests than walking the tree — not more than they
+could reach before.
 
 **No new `AuditAction`.** Search and the tag inventory are reads of metadata the
 caller may already read, and `SECURITY_ACTIONS` is derived as the complement of
@@ -121,6 +147,9 @@ caller may already read, and `SECURITY_ACTIONS` is derived as the complement of
 security record. A retained record per keystroke of a type-ahead is the wrong
 answer to a question nobody asked.
 
-**No new configuration and no new limits constant.** The page bound is the
-existing `PAGE_SIZE_MAX`; the bound on how many tags one query may name is the
-existing `MAX_TAGS_PER_NODE`.
+**No new setting and no new limits constant, and the two are not the same
+thing.** The page bound is the existing `PAGE_SIZE_MAX` — the configurable
+`page_size_max` setting, not a constant in `domain/nodes.py` — clamped in the use
+case, underneath the route's own unchanged `le=1000` ceiling. The bound on how
+many tags one query may name is the existing `MAX_TAGS_PER_NODE`, which *is* a
+domain constant. Nothing new is added to either place.

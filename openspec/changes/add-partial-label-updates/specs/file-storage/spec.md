@@ -2,12 +2,12 @@
 
 ### Requirement: Key/value metadata
 
-A node SHALL carry key/value string pairs, so an integration can record facts about it that are not expressible as a name or a tag. Pairs whose key lies in the namespace reserved for system use SHALL NOT be writable or removable by a caller, and SHALL survive a caller's write that does not name them.
+A node SHALL carry key/value string pairs, so an integration can record facts about it that are not expressible as a name or a tag. Pairs whose key lies in the namespace reserved for system use SHALL NOT be writable or removable by a caller, SHALL survive any write a caller makes, and SHALL NOT appear in any response to a caller.
 
 #### Scenario: Metadata is set and read back
 
 - **WHEN** a caller with `EDITOR` replaces a node's metadata
-- **THEN** the node SHALL carry exactly those pairs, and a caller with `VIEWER` SHALL see them
+- **THEN** the node SHALL carry exactly those pairs among the keys a caller may write, and a caller with `VIEWER` SHALL see them
 
 #### Scenario: A key appears once
 
@@ -34,6 +34,16 @@ A node SHALL carry key/value string pairs, so an integration can record facts ab
 - **WHEN** a caller replaces a node's metadata, including with an empty collection, while a pair in the reserved namespace exists on that node
 - **THEN** the reserved pair SHALL remain, so a caller cannot clear system-written metadata by replacing the metadata they can write
 
+#### Scenario: Reserved metadata is not shown to a caller
+
+- **WHEN** a caller reads a node, or writes its metadata, while a pair in the reserved namespace exists on that node
+- **THEN** the metadata in the response SHALL omit that pair, so the metadata a caller is handed is exactly the metadata it may write back
+
+#### Scenario: The reserved-namespace test ignores case
+
+- **WHEN** a caller writes or removes a key whose prefix matches the reserved namespace in any letter case
+- **THEN** the system SHALL refuse the request, so the namespace cannot be reached by recasing its prefix
+
 #### Scenario: Writing metadata requires edit permission
 
 - **WHEN** a caller holding only `VIEWER` attempts to change metadata
@@ -48,7 +58,7 @@ A node SHALL carry key/value string pairs, so an integration can record facts ab
 
 ### Requirement: Partial label updates
 
-CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, and to set and delete individual metadata keys, in one request that merges with what the node already carries rather than replacing it. A partial update SHALL name what it adds and what it removes explicitly, and SHALL NOT rely on any in-band value meaning removal.
+CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, and to set and delete individual metadata keys, in one request that merges with what the node already carries rather than replacing it. A partial update SHALL name what it adds and what it removes explicitly, and SHALL NOT rely on any in-band value meaning removal. A partial update SHALL NOT alter any label it does not name. Partial updates to one node SHALL be applied one at a time, so that both the maximum a node may hold and the determination that an update changes nothing are decided against a state no other update can alter before the update lands. Concurrent partial updates to one node SHALL therefore be ordered rather than simultaneous, and each SHALL see the effect of those ordered ahead of it.
 
 #### Scenario: Tags are added and removed together
 
@@ -99,6 +109,21 @@ CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, an
 
 - **WHEN** a partial update would leave a node with more tags or more metadata pairs than the permitted maximum
 - **THEN** the system SHALL refuse the request and SHALL change nothing, exactly as replacing the collection would
+
+#### Scenario: Two concurrent partial updates cannot jointly exceed the maximum
+
+- **WHEN** two partial updates are applied concurrently to a node near the permitted maximum, and each would fit on its own but together they would not
+- **THEN** one SHALL succeed and the other SHALL be refused for exceeding the maximum, and the node SHALL never hold more than the maximum
+
+#### Scenario: A successful partial update returns the node's new validator
+
+- **WHEN** a partial update changes a node's labels
+- **THEN** the response SHALL carry the node's post-update ETag, which SHALL equal the ETag a subsequent read returns and SHALL be accepted as the `If-Match` of the next update
+
+#### Scenario: A partial update on a trashed node is refused
+
+- **WHEN** a caller submits a partial update naming a node that is in the trash
+- **THEN** the system SHALL respond `404 Not Found` and SHALL change nothing, as renaming or moving a trashed node does
 
 #### Scenario: A removal names the stored form of a tag
 

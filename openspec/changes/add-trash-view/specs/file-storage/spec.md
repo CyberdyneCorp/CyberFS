@@ -2,7 +2,7 @@
 
 ### Requirement: Soft delete, restore, and purge
 
-Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, after which it SHALL be purged permanently. Purge SHALL delete both the metadata and the underlying objects. Purge SHALL also be available on demand for a node already in the trash, releasing its quota immediately. Restore SHALL return every node that the same deletion removed, and SHALL leave the owner's quota buckets agreeing with the nodes actually made visible.
+Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, after which it SHALL be purged permanently. Purge SHALL delete both the metadata and the underlying objects. Purge SHALL also be available on demand for a node already in the trash, releasing its quota immediately. Restore SHALL be refused rather than partially applied when the name it would reoccupy is no longer free.
 
 #### Scenario: Deleted node hidden from listings
 
@@ -14,25 +14,25 @@ Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, 
 - **WHEN** the owner restores a soft-deleted node whose parent still exists and is not deleted
 - **THEN** the system SHALL make it visible again in that parent
 
-#### Scenario: Restore returns the whole deleted subtree
+#### Scenario: Restore lifts the subtree the delete trashed
 
-- **WHEN** the owner restores a folder that was soft-deleted together with its descendants
-- **THEN** every node that deletion removed SHALL become visible again in its original place, and the restored folder SHALL NOT come back empty
+- **WHEN** the owner restores a soft-deleted folder
+- **THEN** the system SHALL bring back every descendant that the same delete trashed, SHALL advance the revision of each node it brings back so a precondition taken before the delete no longer matches, and SHALL return exactly those nodes' bytes from the trashed bucket to the live one
 
-#### Scenario: A separately deleted node stays deleted
+#### Scenario: A descendant deleted on its own occasion stays trashed
 
-- **WHEN** a node was soft-deleted on its own before the folder containing it was soft-deleted, and that folder is then restored
-- **THEN** that node SHALL remain in the trash and SHALL be offered as its own trash entry, because the owner deleted it deliberately and separately
+- **WHEN** the owner restores a folder holding a descendant that was soft-deleted separately beforehand
+- **THEN** the system SHALL leave that descendant in the trash with its bytes still counted as trashed, counted once
 
-#### Scenario: Restore leaves the quota buckets consistent
+#### Scenario: Deleting charges only what it moved
 
-- **WHEN** a folder is restored
-- **THEN** the bytes moved out of the owner's trashed total SHALL equal the bytes of the nodes actually made visible, so no byte is reported as live while its node is still trashed
+- **WHEN** the owner soft-deletes a folder holding a descendant that was already in the trash
+- **THEN** the system SHALL move only the bytes it actually trashed, leaving the already-trashed descendant counted once rather than twice
 
-#### Scenario: A restored node's earlier revision is stale
+#### Scenario: Restore onto a name that has been taken is refused
 
-- **WHEN** a node is restored, whether as the entry or as one of its descendants
-- **THEN** its revision SHALL have advanced, so an `If-Match` taken before the deletion SHALL be refused
+- **WHEN** the owner restores a trashed node whose name a live sibling has taken since the deletion, which the rule permitting a deleted node's name to be reused allows
+- **THEN** the system SHALL respond `409 Conflict` with error code `name_taken`, and SHALL restore nothing — neither the entry nor any descendant it would have lifted
 
 #### Scenario: Restore to a deleted parent
 
@@ -93,7 +93,7 @@ Deletion SHALL move a node into a recoverable state for `TRASH_RETENTION_DAYS`, 
 
 ### Requirement: Trash listing
 
-CyberFS SHALL expose the caller's soft-deleted nodes as a paginated listing, so a node can be found and restored without the caller having retained its identifier. The listing SHALL present one entry per deletion rather than one per affected node, and each entry SHALL carry enough information to choose between restoring and purging it without a further request.
+CyberFS SHALL expose the caller's soft-deleted nodes as a paginated listing, so a node can be found and restored without the caller having retained its identifier. The listing SHALL present one entry per deletion rather than one per affected node, and each entry SHALL carry enough information to choose between restoring and purging it without a further request. An entry is a restore-or-purge handle rather than a metadata read of the node, so it SHALL NOT carry the content digest or the caller's effective permission.
 
 #### Scenario: A deleted file can be found again
 
@@ -125,6 +125,11 @@ CyberFS SHALL expose the caller's soft-deleted nodes as a paginated listing, so 
 - **WHEN** a node is in the trash and the folder containing it is also in the trash
 - **THEN** only the outermost trashed node SHALL be listed as an entry, and the inner one SHALL become an entry of its own only once its parent is no longer trashed
 
+#### Scenario: The listing reports how many entries the trash holds
+
+- **WHEN** the trash is listed, whatever page is requested
+- **THEN** the response SHALL report the total number of entries the trash currently holds, so the count that emptying the trash requires can be obtained in one request rather than by paginating the whole trash
+
 #### Scenario: The trash is the owner's alone
 
 - **WHEN** a caller who is not the owner lists the trash, including a recipient who held a share of a node before it was deleted
@@ -152,17 +157,17 @@ CyberFS SHALL expose the caller's soft-deleted nodes as a paginated listing, so 
 
 ### Requirement: Emptying the trash
 
-CyberFS SHALL let an owner destroy every entry in their own trash in one call. Because the operation is irreversible and affects many nodes, the caller SHALL state how many entries they intend to destroy, the call SHALL be refused if the trash does not hold exactly that many, and the work performed by one call SHALL be bounded.
+CyberFS SHALL let an owner destroy the entries in their own trash in one call. Because the operation is irreversible and affects many nodes, the caller SHALL state how many entries the trash currently holds, the call SHALL be refused if it holds a different number, and the number of nodes one call destroys SHALL be bounded — save that a single entry SHALL always be destroyable in one call, however large it is, so that no trash can become impossible to empty.
 
 #### Scenario: Emptying the trash destroys every entry and frees the space
 
-- **WHEN** the owner empties a trash holding several entries, stating the number it holds
+- **WHEN** the owner empties a trash holding several entries within the node bound, stating the number of entries it holds
 - **THEN** the system SHALL purge each entry and its subtree — metadata, every version's stored object, wrapped data keys, grants, and public links — and SHALL release the reclaimed bytes from the owner's quota immediately
 
 #### Scenario: A count that does not match refuses the whole operation
 
 - **WHEN** the stated number of entries differs from the number the trash currently holds
-- **THEN** the system SHALL respond `409 Conflict`, SHALL destroy nothing, and SHALL leave the quota unchanged
+- **THEN** the system SHALL respond `409 Conflict` with an error code identifying the count as stale, SHALL destroy nothing, and SHALL leave the quota unchanged
 
 #### Scenario: A live node is never destroyed
 
@@ -174,10 +179,20 @@ CyberFS SHALL let an owner destroy every entry in their own trash in one call. B
 - **WHEN** any caller, administrator included, empties a trash
 - **THEN** the trash emptied SHALL be their own, and there SHALL be no parameter naming another user, because destroying another user's trash wholesale is not offered — per-node purge remains the administrative path
 
-#### Scenario: One call does bounded work
+#### Scenario: One call destroys a bounded number of nodes
 
-- **WHEN** the trash holds more entries than one call may destroy
-- **THEN** the system SHALL destroy at most `PAGE_SIZE_MAX` entries, oldest deletion first, and SHALL report how many entries remain so the caller can continue
+- **WHEN** the trash holds more nodes than one call may destroy
+- **THEN** the system SHALL take entries oldest deletion first and SHALL stop before starting an entry that would exceed the node bound, and SHALL report how many entries remain so the caller can continue with the count the response reports
+
+#### Scenario: No entry is left partly destroyed
+
+- **WHEN** a call stops because the node bound is reached
+- **THEN** every entry it touched SHALL have been destroyed completely, and no entry SHALL remain listed with part of its subtree already destroyed
+
+#### Scenario: An entry larger than the bound is still destroyed
+
+- **WHEN** the oldest entry alone holds more nodes than the bound allows
+- **THEN** the system SHALL destroy that entry rather than refusing, because otherwise no sequence of calls could ever empty the trash
 
 #### Scenario: Emptying an already empty trash
 
@@ -187,4 +202,4 @@ CyberFS SHALL let an owner destroy every entry in their own trash in one call. B
 #### Scenario: Emptying the trash is attributable
 
 - **WHEN** the trash is emptied
-- **THEN** each node destroyed SHALL be recorded exactly as an individual purge records it, and one further record SHALL name the batch with its entry count and reclaimed bytes; both SHALL be security records, retained rather than pruned with activity records
+- **THEN** each entry destroyed SHALL be recorded exactly as an individual purge of that entry records it, and one further record SHALL name the batch with its entry count and reclaimed bytes; both SHALL be security records, retained rather than pruned with activity records

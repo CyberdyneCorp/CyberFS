@@ -1,8 +1,42 @@
 ## MODIFIED Requirements
 
+### Requirement: Listing, search, and metadata
+
+CyberFS SHALL expose node metadata — identifier, name, type, parent, owner, size, content type, digest, encryption state, timestamps, tags, key/value metadata, and the caller's effective permission — and SHALL allow searching by name, tag, and metadata across the nodes a caller owns together with the nodes granted to them.
+
+#### Scenario: Effective permission reported
+
+- **WHEN** a caller reads a node's metadata
+- **THEN** the response SHALL include the caller's effective permission for that node
+
+#### Scenario: Search scoped to accessible nodes
+
+- **WHEN** a caller searches by name substring
+- **THEN** results SHALL include only nodes the caller owns or has been granted, and SHALL never include nodes from other users' private subtrees
+
+#### Scenario: Content is not searchable
+
+- **WHEN** a caller searches
+- **THEN** the system SHALL match on metadata only and SHALL NOT index or match file content
+
+#### Scenario: The content digest is reported
+
+- **WHEN** a caller who may read a file reads its metadata or lists its versions
+- **THEN** the response SHALL carry the SHA-256 digest of the plaintext for the current version and for each listed version
+
+#### Scenario: The digest is withheld from the administrative surface
+
+- **WHEN** an administrator views any administrative report
+- **THEN** no digest SHALL appear, because a plaintext digest would let a holder test whether a user has a specific known file even though its content is encrypted
+
+#### Scenario: No digest appears in a search result or a tag inventory
+
+- **WHEN** a caller searches or requests their tag inventory
+- **THEN** no content digest SHALL appear in either response, so neither surface becomes a way to test for a known file across many nodes in one request
+
 ### Requirement: Searching by tag and metadata
 
-Search SHALL accept tag and metadata filters alongside the name substring, under the same access scoping as the name search. Tag filters SHALL combine with each other according to an explicit match mode — every tag by default, or any one of them on request — and SHALL combine with the name and metadata filters by narrowing in every mode.
+Search SHALL accept tag and metadata filters alongside the name substring, under the same access scoping as the name search: a node the caller owns, or a node the caller holds an active grant on. Tag filters SHALL combine with each other according to an explicit match mode — every tag by default, or any one of them on request — and SHALL combine with the name and metadata filters by narrowing in every mode.
 
 #### Scenario: Search by tag
 
@@ -23,6 +57,11 @@ Search SHALL accept tag and metadata filters alongside the name substring, under
 
 - **WHEN** a caller requests the any-of match mode together with a name substring or a metadata filter
 - **THEN** the name and metadata filters SHALL still narrow the result, so the mode SHALL NOT loosen anything other than how the tags combine with each other
+
+#### Scenario: An undefined match mode is refused
+
+- **WHEN** a caller supplies a tag match mode other than the two defined ones
+- **THEN** the system SHALL respond `422 Unprocessable Entity` and SHALL NOT fall back to the default mode, because silently choosing a mode would return a result set the caller did not ask for
 
 #### Scenario: More tags than a node may carry is refused
 
@@ -49,15 +88,20 @@ Search SHALL accept tag and metadata filters alongside the name substring, under
 - **WHEN** a caller searches by tag or metadata
 - **THEN** results SHALL include only nodes the caller owns or has been granted, on the same terms as the name search, and a node shared with nobody SHALL never appear for another caller
 
+#### Scenario: A grant makes the granted node findable, not its descendants
+
+- **WHEN** a caller holds an active grant on a folder and searches with a filter that a node inside that folder satisfies
+- **THEN** the granted folder itself SHALL appear if it satisfies the filter, and the node inside it SHALL NOT appear, because search is scoped to the nodes granted rather than to the subtrees they head — even though the caller may read that node directly
+
 #### Scenario: A trashed node is not found
 
 - **WHEN** a caller searches by name, tag, or metadata
 - **THEN** trashed nodes SHALL NOT appear
 
-#### Scenario: Results stay bounded, and the remainder stays reachable
+#### Scenario: Results stay bounded
 
 - **WHEN** a search matches more nodes than the permitted page size
-- **THEN** the system SHALL return at most that many rather than scanning without limit, and SHALL return a cursor with which the caller reaches the rest, so that bounding a page never makes a match unreachable
+- **THEN** the system SHALL return at most that many rather than scanning without limit, and the remainder SHALL be reachable as required by "Paginated and ordered search results"
 
 ## ADDED Requirements
 
@@ -100,10 +144,15 @@ Search SHALL return results in a deterministic total order and SHALL carry an op
 - **WHEN** a cursor is not one the system issued
 - **THEN** the system SHALL respond `422 Unprocessable Entity` and SHALL return no results
 
-#### Scenario: The page size is bounded
+#### Scenario: A limit above the largest servable page is never served in full
 
-- **WHEN** a caller requests a limit above `PAGE_SIZE_MAX`
-- **THEN** the system SHALL return at most `PAGE_SIZE_MAX` results and SHALL still carry a cursor for the remainder
+- **WHEN** a caller requests a limit larger than the largest page the system will serve
+- **THEN** the system SHALL either refuse the request with `422 Unprocessable Entity` or reduce it to that largest page, and SHALL NOT return more results than that page, so no request can widen a page by asking
+
+#### Scenario: A page reduced to the bound still reaches the remainder
+
+- **WHEN** a requested limit is reduced to the largest servable page and further matches exist
+- **THEN** the response SHALL carry a cursor for those matches, so reducing a page never makes a match unreachable
 
 #### Scenario: A search without a filter is refused
 
@@ -117,7 +166,7 @@ Search SHALL return results in a deterministic total order and SHALL carry an op
 
 ### Requirement: Tag discovery
 
-CyberFS SHALL let a caller enumerate the tags in use across the nodes they may search, each with the number of those nodes carrying it, so that a caller discovers their own vocabulary rather than having to remember it.
+CyberFS SHALL let a caller enumerate the tags in use across the nodes they may search, each with the number of those nodes carrying it, so that a caller discovers their own vocabulary rather than having to remember it. The inventory's access scope SHALL be the same expression search is scoped by, so the two cannot disagree about which nodes count.
 
 #### Scenario: Tags are listed with their usage counts
 
@@ -127,7 +176,7 @@ CyberFS SHALL let a caller enumerate the tags in use across the nodes they may s
 #### Scenario: The inventory obeys the search access scope
 
 - **WHEN** a caller requests their tag inventory
-- **THEN** it SHALL cover only nodes the caller owns or holds an active grant on, a tag used solely on another user's unshared nodes SHALL NOT appear, and a pending grant SHALL contribute nothing
+- **THEN** it SHALL cover exactly the nodes search covers for that caller — those they own and those they hold an active grant on, and not the descendants of a granted folder — a tag used solely on another user's unshared nodes SHALL NOT appear, and a pending grant SHALL contribute nothing
 
 #### Scenario: Trashed nodes are excluded from the inventory
 
@@ -137,7 +186,7 @@ CyberFS SHALL let a caller enumerate the tags in use across the nodes they may s
 #### Scenario: The inventory agrees with search
 
 - **WHEN** the inventory reports a tag with a count of `n`
-- **THEN** searching with that tag as the only filter SHALL return exactly those `n` nodes, across as many pages as the page bound requires
+- **THEN** searching with that tag as the only filter SHALL return exactly those `n` nodes, across as many pages as the page bound requires, whether the caller owns them or reaches them through a grant
 
 #### Scenario: Counts are per caller, not global
 
@@ -153,6 +202,11 @@ CyberFS SHALL let a caller enumerate the tags in use across the nodes they may s
 
 - **WHEN** a caller supplies a prefix
 - **THEN** the response SHALL list only tags beginning with it, matched against the normalized tag form so that the case and surrounding whitespace of the prefix do not affect the result
+
+#### Scenario: A prefix matches pattern characters literally
+
+- **WHEN** a prefix contains a character that the underlying pattern match would otherwise treat as a wildcard
+- **THEN** that character SHALL match only itself, so a prefix SHALL NOT widen the inventory beyond the tags that literally begin with it
 
 #### Scenario: An inventory cursor is bound to its prefix
 
