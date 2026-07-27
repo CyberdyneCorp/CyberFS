@@ -270,6 +270,43 @@ def test_mkcol_creates_a_folder_visible_over_rest(client: TestClient) -> None:
     assert "made" in names
 
 
+def test_mkcol_on_a_mapped_url_is_405_and_not_the_generic_412(client: TestClient) -> None:
+    """RFC 4918 9.3.1 names 405 for a URL that is already mapped.
+
+    Every other taken-name refusal on this surface is a 412, which is right for
+    `COPY`/`MOVE` (9.8.5) and wrong here: a sync client calls `MKCOL` on
+    directories that may already exist and reads 405 as "already there, carry
+    on", where 412 is a precondition it never set. Caught against the live
+    deployment, so it is pinned at this tier too.
+    """
+    creds = dav_credentials(client)
+    assert client.request("MKCOL", "/webdav/twice", headers=creds).status_code == HTTPStatus.CREATED
+
+    again = client.request("MKCOL", "/webdav/twice", headers=creds)
+
+    assert again.status_code == HTTPStatus.METHOD_NOT_ALLOWED, again.text
+    assert "{DAV:}error" in again.text or "D:error" in again.text, "must still be DAV XML"
+
+
+def test_a_taken_name_is_still_412_for_move(client: TestClient) -> None:
+    """The other half of the distinction: 412 stays correct where RFC 4918 says so."""
+    creds = dav_credentials(client)
+    client.put(
+        "/webdav/source.bin", content=os.urandom(32), headers={**creds, "Content-Type": OCTET}
+    )
+    client.put(
+        "/webdav/target.bin", content=os.urandom(32), headers={**creds, "Content-Type": OCTET}
+    )
+
+    moved = client.request(
+        "MOVE",
+        "/webdav/source.bin",
+        headers={**creds, "Destination": "http://testserver/webdav/target.bin", "Overwrite": "F"},
+    )
+
+    assert moved.status_code == HTTPStatus.PRECONDITION_FAILED, moved.text
+
+
 def test_delete_is_a_soft_delete_and_stays_restorable(client: TestClient) -> None:
     """WebDAV must not be a way around the trash."""
     creds = dav_credentials(client)

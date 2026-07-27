@@ -189,7 +189,16 @@ async def _mkcol(request: Request, uow: UnitOfWork, user: User, path: str) -> Re
     if not name:
         return _refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the root already exists")
     parent = await _resolve(uow, user, parent_path)
-    await _nodes(request).create_folder(uow, user, parent.id, name)
+    try:
+        await _nodes(request).create_folder(uow, user, parent.id, name)
+    except NameTakenError:
+        # RFC 4918 9.3.1: MKCOL "can only be executed on an unmapped URL", and
+        # names the status for a mapped one as 405 -- not the 412 every other
+        # taken-name refusal on this surface returns. The distinction is not
+        # pedantry: a client syncing a tree calls MKCOL on directories that may
+        # already exist and treats 405 as "already there, carry on", where 412
+        # reads as a precondition it never set and aborts the sync.
+        return _refuse(HTTPStatus.METHOD_NOT_ALLOWED, "the collection already exists")
     await uow.commit()
     return Response(status_code=HTTPStatus.CREATED)
 

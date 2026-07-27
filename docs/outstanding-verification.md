@@ -69,12 +69,56 @@ authorization URL is returned correctly, and password sign-in returns a token
 pair whose profile reports `is_admin`. Neither consent round trip has been driven
 in a real browser.
 
-## 6. Scheduled backup and retention
+## 6. Backup retention
 
-**Spec:** `backup-restore` — "Scheduling and target", "Retention".
+**Spec:** `backup-restore` — "Retention".
 
-`BACKUP_CRON` defaults to `0 3 * * *` UTC and has never fired in production; every
-backup so far was triggered by hand. Retention is thoroughly unit-tested but has
-never pruned a real artifact — production holds two backups and the failed one
-should disappear once `BACKUP_FAILED_GRACE_HOURS` passes. Both are answered by
-waiting and looking rather than by any code change.
+**Scheduling is now proved.** `BACKUP_CRON` (`0 3 * * *` UTC) fired in production on
+2026-07-27 at `03:00:00.027634Z` and the artifact verified: 25.85 s, 3.49 MB, 85
+objects, `last_outcome: verified`, `stale: false`. The sub-second offset from
+exactly 03:00 is the scheduler, not a hand trigger. Read it back any time with
+`GET /api/v1/admin/operations`, which `tests/e2e/test_live_admin.py` now covers.
+
+**Retention still has not pruned anything.** The register holds three artifacts,
+including the failed run from 2026-07-26 13:32 — and `BACKUP_FAILED_GRACE_HOURS`
+defaults to 24, which elapsed over a day ago. So either the retention sweep is not
+running or it is not removing failed artifacts, and the difference matters: the
+first is a scheduling problem, the second is a bug in the sweep. Establish which
+before assuming this closes itself by waiting.
+
+## 7. Sharing by email is broken in production
+
+**Spec:** `sharing` — recipient resolution.
+
+`PUT /api/v1/nodes/{id}/grants` with an email recipient answers `503 "the user
+directory is unavailable"` for *every* address, including ones that certainly
+exist. Sharing by subject UUID works, so only the email path is affected.
+
+The cause is proved and is configuration, not code: CyberFS's OAuth client
+(`cyb_IISsKa9xrdPaFzIJ`) is registered in CyberdyneAuth with `scope: ""`, so
+`GET /orgs/{id}/members` refuses it with
+`403 Insufficient scope: directory:read required`. Granting that one scope to the
+client fixes it; nothing needs deploying.
+
+Two things follow that *are* code:
+
+- `adapters/outbound/auth/directory.py` maps any `httpx.HTTPError` from that call
+  to `DependencyUnavailableError`, so an authorization failure is reported as an
+  outage. A `403` from the directory means "CyberFS is not allowed to ask", which
+  is permanent and actionable; `503` invites a retry that can never succeed.
+- No test could have caught it. The integration suite stubs the directory, and a
+  stub cannot be missing a scope. `tests/e2e/test_live_sharing.py` now asserts the
+  working behaviour and fails until the scope is granted.
+
+## 8. `MKCOL` on an existing collection answers the wrong status
+
+**Spec:** `webdav-compatibility`.
+
+Fixed in `adapters/inbound/api/routers/webdav.py` but **not yet deployed**: every
+taken-name refusal on the WebDAV surface returned `412`, where RFC 4918 §9.3.1
+names `405` for a `MKCOL` on an already-mapped URL. `412` stays correct for
+`COPY`/`MOVE` (§9.8.5). It matters because a sync client calls `MKCOL` on
+directories that may already exist and reads `405` as "already there, carry on",
+while `412` is a precondition it never set. Found by running
+`tests/e2e/test_live_webdav.py` against the deployment; that test fails until the
+fix ships.
