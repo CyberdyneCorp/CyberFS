@@ -233,7 +233,9 @@ class SqlNodeRepository:
         granted = select(m.GrantRow.node_id).where(
             m.GrantRow.subject == subject, m.GrantRow.pending.is_(False)
         )
-        conditions = [
+        # Annotated because the list starts with comparisons and later gains
+        # `EXISTS` clauses; inference from the first elements would reject them.
+        conditions: list[ColumnElement[bool]] = [
             m.NodeRow.deleted_at.is_(None),
             (m.NodeRow.owner_id == owned) | (m.NodeRow.id.in_(granted)),
         ]
