@@ -271,3 +271,33 @@ def test_a_multipart_upload_round_trips_byte_identically(base_url: str) -> None:
 def _find_child(base_url: str, who: dict[str, str], parent: str, name: str) -> str:
     page = httpx.get(f"{base_url}/api/v1/nodes/{parent}/children", headers=who).json()
     return next(str(item["id"]) for item in page["items"] if item["name"] == name)
+
+
+def test_a_trashed_file_disappears_from_the_s3_listing(base_url: str) -> None:
+    """The trash view must not loosen this: an S3 client sees the live tree only.
+
+    A trashed node is still a row with an object behind it, so nothing about the
+    delete removes it from the store -- only the listing's `deleted_at IS NULL`
+    filter keeps it out of an S3 client's view.
+    """
+    root = _root(base_url, ALICE)
+    upload = httpx.put(
+        f"{base_url}/api/v1/nodes/{root}/files/doomed.txt",
+        content=PAYLOAD,
+        headers={**ALICE, "Content-Type": "text/plain"},
+    )
+    assert upload.status_code == 201, upload.text
+    node_id = upload.json()["id"]
+
+    access_key, secret = _mint_key(base_url)
+    client = _s3_client(base_url, access_key, secret)
+    before = {item["Key"] for item in client.list_objects_v2(Bucket="alice").get("Contents", [])}
+    assert "doomed.txt" in before
+
+    assert httpx.delete(f"{base_url}/api/v1/nodes/{node_id}", headers=ALICE).status_code == 200
+    # It is in the trash, and the trash is a REST-only surface.
+    listing = httpx.get(f"{base_url}/api/v1/trash", headers=ALICE).json()
+    assert [item["id"] for item in listing["items"]] == [node_id]
+
+    after = {item["Key"] for item in client.list_objects_v2(Bucket="alice").get("Contents", [])}
+    assert "doomed.txt" not in after

@@ -11,7 +11,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from cyberfs.domain.errors import ValidationError
@@ -288,3 +288,53 @@ class NodePath:
     @property
     def depth(self) -> int:
         return len(self.ancestors)
+
+
+@dataclass(frozen=True, slots=True)
+class SubtreeTotals:
+    """What a deletion amounts to: content bytes and how many rows hold them.
+
+    A folder's own `size_bytes` is zero, so this is the only honest answer to
+    "how much comes back if I restore this".
+    """
+
+    size_bytes: int = 0
+    nodes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TrashEntry:
+    """One deletion, as the owner's trash presents it.
+
+    Self-contained deliberately. A trashed node cannot be read individually and
+    a trashed subtree cannot be browsed, so everything needed to choose between
+    restoring and purging -- where it came from, when it goes, and how much of
+    it comes back -- is carried here rather than fetched afterwards.
+    """
+
+    node: Node
+    #: The path the node occupied, and returns to when restored.
+    path: str
+    deleted_at: datetime
+    #: When the retention sweep destroys it, from `TRASH_RETENTION_DAYS`.
+    purge_after: datetime
+    totals: SubtreeTotals
+
+    @classmethod
+    def of(
+        cls,
+        node: Node,
+        ancestors: Sequence[Node],
+        *,
+        retention_days: int,
+        totals: SubtreeTotals,
+    ) -> TrashEntry:
+        if node.deleted_at is None:
+            raise ValidationError("a live node is not a trash entry", node_id=str(node.id))
+        return cls(
+            node=node,
+            path=NodePath(node, tuple(ancestors)).path,
+            deleted_at=node.deleted_at,
+            purge_after=node.deleted_at + timedelta(days=retention_days),
+            totals=totals,
+        )

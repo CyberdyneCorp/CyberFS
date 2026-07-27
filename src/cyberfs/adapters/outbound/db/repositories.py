@@ -18,6 +18,7 @@ from sqlalchemy import (
     ColumnElement,
     CursorResult,
     Select,
+    UnaryExpression,
     case,
     delete,
     func,
@@ -31,12 +32,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cyberfs.adapters.outbound.db import mappers
 from cyberfs.adapters.outbound.db import models as m
 from cyberfs.domain.audit import AuditRecord
+from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node, NodeKind
+from cyberfs.domain.nodes import (
+    RESERVED_METADATA_PREFIX,
+    FileVersion,
+    Node,
+    NodeKind,
+    SubtreeTotals,
+)
 
 # Re-exported below so every existing caller -- and every paginated surface
 # added later -- keeps importing its cursor helpers from one place.
-from cyberfs.domain.pagination import decode_cursor, encode_cursor
+from cyberfs.domain.pagination import (
+    decode_cursor,
+    decode_keyed_cursor,
+    encode_cursor,
+    encode_keyed_cursor,
+    fingerprint_of,
+)
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
@@ -222,6 +236,105 @@ class SqlNodeRepository:
         for node in cleared:
             node.restore(now)
         return tuple(cleared)
+
+    async def list_trash_entries(
+        self,
+        owner_id: uuid.UUID,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        oldest_first: bool = False,
+    ) -> Page[Node]:
+        """The owner's trash, collapsed to one row per deletion.
+
+        The "parent is not trashed" test is in the `WHERE` clause rather than
+        applied to the rows that came back: filtering after the `LIMIT` returns
+        short -- occasionally empty -- pages while further entries exist, which
+        a client cannot distinguish from the end of the trash.
+        """
+        fingerprint = _trash_fingerprint(owner_id, oldest_first)
+        stmt = select(m.NodeRow).where(*_trash_entry_conditions(owner_id))
+        stmt = stmt.order_by(*_trash_order(oldest_first))
+        if cursor is not None:
+            stmt = stmt.where(_trash_cursor_predicate(cursor, fingerprint, oldest_first))
+        rows = list((await self._session.execute(stmt.limit(limit + 1))).scalars())
+        return _paginate(
+            rows, limit, mappers.node_from_row, lambda row: _trash_cursor(row, fingerprint)
+        )
+
+    async def count_trash_entries(self, owner_id: uuid.UUID) -> int:
+        total = await self._session.scalar(
+            select(func.count()).select_from(m.NodeRow).where(*_trash_entry_conditions(owner_id))
+        )
+        return int(total or 0)
+
+    async def delete_batch_totals(
+        self, node_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, SubtreeTotals]:
+        """One recursive aggregate for every id supplied, keyed by that id."""
+        if not node_ids:
+            return {}
+        walk = _subtree_walk(node_ids)
+        result = await self._session.execute(
+            select(
+                walk.c.root_id,
+                func.coalesce(
+                    func.sum(case((walk.c.kind == str(NodeKind.FILE), walk.c.size_bytes), else_=0)),
+                    0,
+                ).label("size_bytes"),
+                func.count().label("nodes"),
+            )
+            # `restore_subtree` lifts exactly the rows stamped with the root's
+            # own `deleted_at`, so counting those and no others is what makes
+            # the total describe what restoring would actually bring back. A live
+            # root has a NULL stamp, which equals nothing -- so it drops out
+            # entirely rather than reporting a subtree of zero.
+            .where(walk.c.deleted_at == walk.c.batch)
+            .group_by(walk.c.root_id)
+        )
+        return {
+            row.root_id: SubtreeTotals(size_bytes=int(row.size_bytes), nodes=int(row.nodes))
+            for row in result
+        }
+
+    async def ancestor_chains(
+        self, node_ids: Sequence[uuid.UUID], *, max_depth: int
+    ) -> dict[uuid.UUID, tuple[Node, ...]]:
+        """One upward walk seeded with every id, each row tagged with its seed.
+
+        The same shape as `ancestors`, batched: rendering a page of trash entries
+        needs a path each, and issuing one recursive query per entry would make a
+        single listing cost up to `PAGE_SIZE_MAX` of them.
+        """
+        if not node_ids:
+            return {}
+        base = (
+            select(
+                m.NodeRow.id.label("seed_id"),
+                m.NodeRow.parent_id.label("next_id"),
+                literal(0).label("depth"),
+            )
+            .where(m.NodeRow.id.in_(node_ids))
+            .cte("chains", recursive=True)
+        )
+        parent = m.NodeRow.__table__.alias("chain_parent")
+        walk = base.union_all(
+            select(base.c.seed_id, parent.c.parent_id, (base.c.depth + 1).label("depth")).where(
+                parent.c.id == base.c.next_id,
+                base.c.depth < max_depth,
+            )
+        )
+        # The recursion carries only ids; the node columns are joined on at the
+        # end so the CTE stays narrow however wide `NodeRow` grows.
+        result = await self._session.execute(
+            select(walk.c.seed_id, walk.c.depth, m.NodeRow)
+            .join(m.NodeRow, m.NodeRow.id == walk.c.next_id)
+            .order_by(walk.c.seed_id, walk.c.depth.desc())
+        )
+        chains: dict[uuid.UUID, list[Node]] = {node_id: [] for node_id in node_ids}
+        for row in result.mappings():
+            chains[row["seed_id"]].append(mappers.node_from_mapping(dict(row)))
+        return {node_id: tuple(chain) for node_id, chain in chains.items()}
 
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]:
         result = await self._session.execute(
@@ -669,6 +782,112 @@ def _child_cursor_predicate(raw: str) -> ColumnElement[bool]:
             & (m.NodeRow.normalized_name == name)
             & (m.NodeRow.id > uuid.UUID(node_id))
         )
+    )
+
+
+def _trash_entry_conditions(owner_id: uuid.UUID) -> tuple[ColumnElement[bool], ...]:
+    """Trashed rows of one owner whose parent is absent or still live.
+
+    Shared by the listing and the count so the number a caller is asked to
+    confirm is counted over exactly the rows the listing would show.
+    """
+    parent = m.NodeRow.__table__.alias("trash_parent")
+    trashed_parent = (
+        select(parent.c.id)
+        .where(parent.c.id == m.NodeRow.parent_id, parent.c.deleted_at.is_not(None))
+        .exists()
+    )
+    return (
+        m.NodeRow.owner_id == owner_id,
+        m.NodeRow.deleted_at.is_not(None),
+        # A parent is required, not merely untrashed. `NodeRow.parent_id` is
+        # `ON DELETE CASCADE`, so purging a folder removes its children's rows
+        # too -- a trashed node can never be left orphaned by a purge, and a NULL
+        # parent therefore means exactly one thing: a root folder. Admitting those
+        # would list a row whose restore would reparent a root beneath itself, and
+        # "no root folder SHALL appear" says not to.
+        m.NodeRow.parent_id.is_not(None),
+        ~trashed_parent,
+    )
+
+
+def _trash_order(oldest_first: bool) -> tuple[UnaryExpression[Any], ...]:
+    """Deletion time, then id so a page boundary is never ambiguous."""
+    if oldest_first:
+        return (m.NodeRow.deleted_at.asc(), m.NodeRow.id.asc())
+    return (m.NodeRow.deleted_at.desc(), m.NodeRow.id.desc())
+
+
+def _trash_fingerprint(owner_id: uuid.UUID, oldest_first: bool) -> str:
+    """What a trash cursor is bound to: whose trash, walked which way.
+
+    The direction is part of it because the two orders are two different result
+    sets. Resuming a newest-first walk against the oldest-first one that emptying
+    the trash uses would silently skip a prefix of the entries, and skipping
+    entries is how a caller confirms a count over rows they never saw.
+    """
+    return fingerprint_of("trash", str(owner_id), "oldest" if oldest_first else "newest")
+
+
+def _trash_cursor(row: m.NodeRow, fingerprint: str) -> str:
+    # Not null: every row the listing returns passed `deleted_at IS NOT NULL`.
+    assert row.deleted_at is not None
+    return encode_keyed_cursor(fingerprint, row.deleted_at.isoformat(), str(row.id))
+
+
+def _trash_cursor_predicate(
+    cursor: str, fingerprint: str, oldest_first: bool
+) -> ColumnElement[bool]:
+    stamp_text, node_id = decode_keyed_cursor(
+        decode_cursor(cursor), fingerprint=fingerprint, fields=2
+    )
+    try:
+        stamp = datetime.fromisoformat(stamp_text)
+        edge = uuid.UUID(node_id)
+    except ValueError as exc:
+        # The digest only proves the payload is intact, never that its fields
+        # parse -- anybody can compute one over nonsense. A refusal, not a 500.
+        raise ValidationError("cursor is not valid") from exc
+    if oldest_first:
+        return (m.NodeRow.deleted_at > stamp) | (
+            (m.NodeRow.deleted_at == stamp) & (m.NodeRow.id > edge)
+        )
+    return (m.NodeRow.deleted_at < stamp) | (
+        (m.NodeRow.deleted_at == stamp) & (m.NodeRow.id < edge)
+    )
+
+
+def _subtree_walk(node_ids: Sequence[uuid.UUID]) -> Any:
+    """Every id's subtree in one recursive CTE, each row tagged with its root.
+
+    `batch` carries the root's `deleted_at` down the walk, so the aggregate can
+    keep the rows a restore of that root would lift and drop the rest without a
+    second query.
+    """
+    base = (
+        select(
+            m.NodeRow.id.label("root_id"),
+            m.NodeRow.deleted_at.label("batch"),
+            m.NodeRow.id.label("node_id"),
+            m.NodeRow.kind.label("kind"),
+            m.NodeRow.size_bytes.label("size_bytes"),
+            m.NodeRow.deleted_at.label("deleted_at"),
+            literal(0).label("depth"),
+        )
+        .where(m.NodeRow.id.in_(node_ids))
+        .cte("entry_subtree", recursive=True)
+    )
+    child = m.NodeRow.__table__.alias("entry_child")
+    return base.union_all(
+        select(
+            base.c.root_id,
+            base.c.batch,
+            child.c.id,
+            child.c.kind,
+            child.c.size_bytes,
+            child.c.deleted_at,
+            (base.c.depth + 1).label("depth"),
+        ).where(child.c.parent_id == base.c.node_id, base.c.depth < _CYCLE_GUARD_DEPTH)
     )
 
 

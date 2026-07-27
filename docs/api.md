@@ -82,8 +82,63 @@ Source of truth for every path below:
 | PATCH | `/api/v1/nodes/{node_id}/parent` | Move a node to another parent. |
 | POST | `/api/v1/nodes/{node_id}/copy` | Copy a node into another folder (content duplicated server-side). |
 | DELETE | `/api/v1/nodes/{node_id}` | Move to trash. |
-| POST | `/api/v1/nodes/{node_id}/restore` | Restore from trash. |
+| POST | `/api/v1/nodes/{node_id}/restore` | Restore from trash — brings back the whole subtree that deletion removed. |
 | GET | `/api/v1/search` | Search node metadata (`q`, `limit`). |
+
+### Trash — `trash.py` (claim-based)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/trash` | The caller's own trash, newest deletion first (cursor-paginated: `limit`, `cursor`). |
+| POST | `/api/v1/trash/purge` | Destroy every entry in the caller's trash. Irreversible, bounded, count-guarded. |
+
+The trash is **one entry per deletion**, not one per affected node: deleting a
+folder of four hundred files produces a single entry, for the folder. Each entry
+carries the path the node occupied, when it was deleted, when the retention
+sweep will destroy it (`TRASH_RETENTION_DAYS`), and the total content bytes and
+node count that restoring it would bring back — so a client never has to read a
+trashed node individually, which the API deliberately refuses (`404`).
+
+`POST /api/v1/nodes/{node_id}/restore` on an entry brings back **every node the
+same deletion removed**, each with its revision advanced, so an `If-Match` taken
+before the deletion no longer matches. A node deleted separately *before* its
+parent stays deleted, and reappears as its own trash entry once the parent is
+live again.
+
+The trash is the owner's alone. A share recipient sees nothing — a soft delete
+withdraws access — and there is no path or query parameter naming another user.
+No administrative counterpart exists: node names are gated on the admin surface
+behind `ADMIN_SHOW_FILENAMES`, and a trash listing there would hand over names,
+paths, and sizes with no gate at all. `POST /api/v1/nodes/{id}/purge` remains the
+administrative path for a node named in an audit record.
+
+#### Emptying the trash
+
+```
+POST /api/v1/trash/purge
+{"expected_entries": 7}
+```
+
+`expected_entries` is required and is checked against the trash as it stands: a
+mismatch is `409 Conflict` and destroys nothing. The count can only be right if
+the caller listed the trash first, which is the point — a `confirm: true` flag
+would be a constant no client could get wrong, and therefore no evidence that
+anybody looked.
+
+One call destroys at most `PAGE_SIZE_MAX` entries, oldest deletion first, and
+reports what is left:
+
+```json
+{"entries_purged": 7, "nodes_destroyed": 412, "objects_deleted": 380,
+ "bytes_reclaimed": 91234567, "entries_remaining": 0}
+```
+
+So a large trash is a loop: empty, read `entries_remaining`, restate it, repeat
+until it is zero. A blind retry after a successful call fails loudly with `409`
+rather than destroying whatever has since been trashed.
+
+Every node destroyed produces the same retained `node.purged` security record an
+individual purge would, plus one `trash.emptied` record naming the batch.
 
 ### Content — `content.py` (claim-based)
 

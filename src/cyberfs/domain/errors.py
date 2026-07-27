@@ -3,8 +3,8 @@
 Errors are semantic, not HTTP -- the inbound adapter maps them to status
 codes. The `code` on each class is the stable, machine-readable identifier
 that appears in API responses and audit records; the codes named in the specs
-(`name_taken`, `would_create_cycle`, `token_expired`, `integrity_failure`, …)
-are defined here.
+(`name_taken`, `would_create_cycle`, `token_expired`, `integrity_failure`,
+`trash_count_mismatch`, …) are defined here.
 """
 
 from __future__ import annotations
@@ -219,6 +219,19 @@ class CannotRevokeOwnerError(ConflictError):
 class CannotShareWithSelfError(ConflictError):
     code = "cannot_share_with_self"
     title = "Cannot share with yourself"
+
+
+class TrashCountMismatchError(ConflictError):
+    """The count guarding an empty-trash request no longer matches the trash.
+
+    Its own code rather than a bare `ConflictError`, because "your count is
+    stale, list the trash again and retry" is the one `409` from this API that a
+    client can resolve without a human -- and it must not be confused with
+    `name_taken`, which the same status carries elsewhere.
+    """
+
+    code = "trash_count_mismatch"
+    title = "The trash does not hold the stated number of entries"
 
 
 # --- request shape ---------------------------------------------------------

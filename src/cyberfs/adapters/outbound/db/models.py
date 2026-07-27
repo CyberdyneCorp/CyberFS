@@ -110,9 +110,20 @@ class NodeRow(Base):
         ),
         # Owner-scoped lookups and quota reconciliation.
         Index("ix_nodes_owner", "owner_id"),
-        # The trash sweep: find everything deleted before a cutoff.
+        # The trash sweep: find everything deleted before a cutoff. Deliberately
+        # NOT owner-scoped -- the sweep reads across every user, so narrowing it
+        # to one would defeat it.
         Index(
             "ix_nodes_deleted_at",
+            "deleted_at",
+            postgresql_where=text("deleted_at IS NOT NULL"),
+        ),
+        # One owner's trash listing, which the sweep's index cannot serve. Narrows
+        # to the caller's trashed rows in deletion order first; the "parent is not
+        # trashed" test is then a primary-key lookup per candidate.
+        Index(
+            "ix_nodes_owner_trash",
+            "owner_id",
             "deleted_at",
             postgresql_where=text("deleted_at IS NOT NULL"),
         ),

@@ -353,9 +353,7 @@ def test_a_patch_on_a_trashed_node_is_404_over_http(client: TestClient) -> None:
     assert client.delete(f"/api/v1/nodes/{node}", headers=ALICE).status_code == HTTPStatus.OK
 
     assert patch_tags(client, ALICE, node, add=["after"]).status_code == HTTPStatus.NOT_FOUND
-    assert (
-        patch_metadata(client, ALICE, node, pairs={"k": "v"}).status_code == HTTPStatus.NOT_FOUND
-    )
+    assert patch_metadata(client, ALICE, node, pairs={"k": "v"}).status_code == HTTPStatus.NOT_FOUND
 
     restored = client.post(f"/api/v1/nodes/{node}/restore", headers=ALICE)
     assert restored.status_code == HTTPStatus.OK, restored.text

@@ -18,7 +18,7 @@ from typing import Any, Protocol
 from cyberfs.domain.activity import ActivityEntry, ActivityRollup
 from cyberfs.domain.audit import AuditRecord
 from cyberfs.domain.keys import UserKey, WrappedDataKey
-from cyberfs.domain.nodes import FileVersion, Node
+from cyberfs.domain.nodes import FileVersion, Node, SubtreeTotals
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
@@ -107,6 +107,71 @@ class NodeRepository(Protocol):
         through two sibling deletes would merge them into one batch and this
         would resurrect the wrong rows -- so do not. Recording an explicit batch
         id is the fix if a bulk delete ever needs to.
+        """
+        ...
+
+    async def list_trash_entries(
+        self,
+        owner_id: uuid.UUID,
+        *,
+        limit: int,
+        cursor: str | None = None,
+        oldest_first: bool = False,
+    ) -> Page[Node]:
+        """One entry per deletion in that owner's trash, most recent first.
+
+        An entry is a trashed node whose parent is absent or not itself trashed,
+        so deleting a folder of four hundred files yields one entry rather than
+        four hundred. A descendant could not be presented usefully anyway: its
+        ancestors are trashed too, so it has no path in the live tree, and
+        restoring it individually reparents it into the owner's root instead of
+        reconstructing anything.
+
+        Owner-scoped by signature -- a share confers nothing on a trashed node,
+        so there is no shape here that could return another user's trash. Pass
+        `oldest_first` for the destruction order emptying the trash uses;
+        pagination is deterministic either way.
+        """
+        ...
+
+    async def count_trash_entries(self, owner_id: uuid.UUID) -> int:
+        """How many entries that owner's trash currently holds.
+
+        Exact and unbounded, because it is what a caller's stated count is
+        checked against before anything is destroyed.
+        """
+        ...
+
+    async def delete_batch_totals(
+        self, node_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, SubtreeTotals]:
+        """Content bytes and node counts of each id's *delete batch*, in one query.
+
+        Named for the batch and not the subtree because that is what it measures:
+        only the rows stamped with the id's own `deleted_at`, which is exactly
+        what `restore_subtree` would lift. A descendant trashed on its own
+        occasion carries a different stamp, so it is excluded here and counted
+        once, under its own entry.
+
+        It follows that an id which is **not trashed** has no batch and is simply
+        **absent from the result** -- there is no row whose `deleted_at` equals
+        NULL. Callers must treat a missing key as "not a trash entry" rather than
+        as a subtree of zero bytes.
+
+        One aggregate rather than a recursive walk per entry: a page is bounded
+        by `PAGE_SIZE_MAX`, and a thousand walks to render a listing is not.
+        """
+        ...
+
+    async def ancestor_chains(
+        self, node_ids: Sequence[uuid.UUID], *, max_depth: int
+    ) -> dict[uuid.UUID, tuple[Node, ...]]:
+        """`ancestors` for many nodes at once: one walk, keyed by the id asked for.
+
+        Each chain is root first and excludes the node itself, exactly as
+        `ancestors` returns it. It exists because rendering a page of trash
+        entries needs a path per entry, and a walk per entry would be up to
+        `PAGE_SIZE_MAX` recursive queries for one read.
         """
         ...
 
