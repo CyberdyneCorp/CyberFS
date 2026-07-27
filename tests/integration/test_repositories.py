@@ -326,10 +326,12 @@ async def test_soft_delete_covers_the_whole_subtree(uow: SqlUnitOfWork) -> None:
     b = await add_folder(uow, user, "b", a.id)
     leaf = await add_file(uow, user, "leaf.txt", b.id)
 
-    count = await uow.nodes.soft_delete_subtree(a.id, NOW)
+    moved = await uow.nodes.soft_delete_subtree(a.id, NOW)
     await uow.flush()
 
-    assert count == 3
+    # Returns the rows it moved, not a bare count, so the caller can charge the
+    # quota for exactly those and no others.
+    assert {n.id for n in moved} == {a.id, b.id, leaf.id}
     for node_id in (a.id, b.id, leaf.id):
         node = await uow.nodes.get(node_id)
         assert node is not None and node.is_deleted
