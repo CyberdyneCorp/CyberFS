@@ -11,6 +11,18 @@ Highlights:
 - **Hierarchical filesystem** — folders, files, rename/move, trash with
   retention, on-demand purge, content versioning, and metadata search
   (`/api/v1/nodes`, `/api/v1/search`).
+- **Tags and metadata** — a label set and key/value pairs on any node, searchable
+  alongside the name (`PUT /api/v1/nodes/{id}/tags`,
+  `PUT /api/v1/nodes/{id}/metadata`). Both replace wholesale rather than merging,
+  so an empty list clears them. Search filters combine with AND: repeating `tag`
+  requires every one of them, and `value` pins the `key` it accompanies.
+  **Tags and metadata are stored unencrypted**, because searchable means indexed
+  — anything placed in them is readable by whoever can read the database, and by
+  administrators. File *content* stays encrypted and is never indexed.
+- **Content digest** — every version carries the SHA-256 of its plaintext,
+  reported on the node and on each version, so a client can verify what it
+  downloaded. It is withheld from the admin surface: a plaintext hash would let a
+  holder confirm which user has a specific known file even when it is encrypted.
 - **Sharing** — per-node grants with roles, "shared with me", public links with
   rate-limited access, and ownership transfer (`/api/v1/shares`, see the
   [sharing spec](openspec/changes/bootstrap-cyberfs/specs/sharing/spec.md)).

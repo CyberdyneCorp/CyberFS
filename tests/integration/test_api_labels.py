@@ -234,6 +234,50 @@ def test_an_active_grant_makes_a_tagged_node_findable(client: TestClient) -> Non
     assert found(client, BOB, tag="collab") == {node}
 
 
+def test_a_pending_grant_does_not_make_a_tagged_node_findable(
+    engine: object, session_factory: object
+) -> None:
+    """A pending share confers no access, and search must honour that.
+
+    Built with the async-rewrap threshold at zero so any share of an encrypted
+    subtree is deferred: the grant exists but is pending until the worker has
+    rewrapped every key, and until then the recipient must not be able to find
+    the node by tag any more than they could read it.
+    """
+    settings = build_settings(
+        auth_dev_mode=True,
+        environment=Environment.TEST,
+        minio_endpoint=ENDPOINT,
+        minio_access_key="cyberfs",
+        minio_secret_key="cyberfs-dev-secret",
+        minio_bucket=f"cyberfs-pending-{uuid.uuid4().hex[:8]}",
+        minio_secure=False,
+        async_rewrap_threshold_nodes=0,
+    )
+    with TestClient(create_app(settings), raise_server_exceptions=False) as client:
+        root = root_id(client, ALICE)
+        node = folder(client, ALICE, root, "deferred")
+        # An encrypted child is what makes the rewrap deferrable.
+        encrypted = client.put(
+            f"/api/v1/nodes/{node}/files/sealed.bin",
+            content=os.urandom(512),
+            params={"encrypted": "true"},
+            headers={**ALICE, "Content-Type": OCTET},
+        )
+        assert encrypted.status_code == HTTPStatus.CREATED, encrypted.text
+        tag(client, ALICE, node, "deferred-label")
+        root_id(client, BOB)
+
+        granted = client.put(
+            f"/api/v1/nodes/{node}/grants",
+            json={"recipient": "bob", "role": "viewer"},
+            headers=ALICE,
+        )
+        assert granted.status_code == HTTPStatus.CREATED, granted.text
+
+        assert found(client, BOB, tag="deferred-label") == set()
+
+
 def test_a_trashed_node_is_not_found(client: TestClient) -> None:
     node = folder(client, ALICE, root_id(client, ALICE), "doomed")
     tag(client, ALICE, node, "gone")
