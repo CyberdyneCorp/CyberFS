@@ -9,7 +9,6 @@ as a bounded result rather than a hung request.
 
 from __future__ import annotations
 
-import base64
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -32,26 +31,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cyberfs.adapters.outbound.db import mappers
 from cyberfs.adapters.outbound.db import models as m
 from cyberfs.domain.audit import AuditRecord
-from cyberfs.domain.errors import ValidationError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node, NodeKind
+
+# Re-exported below so every existing caller -- and every paginated surface
+# added later -- keeps importing its cursor helpers from one place.
+from cyberfs.domain.pagination import decode_cursor, encode_cursor
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
-
-
-def encode_cursor(value: str) -> str:
-    return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
-
-
-def decode_cursor(cursor: str) -> str:
-    padded = cursor + "=" * (-len(cursor) % 4)
-    try:
-        return base64.urlsafe_b64decode(padded).decode()
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ValidationError("cursor is not valid") from exc
 
 
 class SqlUserRepository:

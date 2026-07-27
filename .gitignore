@@ -30,3 +30,6 @@ admin/test-results/
 *.secret
 .cyberfs-client.secret
 .local-keys/
+
+# Workflow agent worktrees (git-managed, never committed)
+.claude/worktrees/

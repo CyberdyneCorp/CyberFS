@@ -36,6 +36,17 @@ MAX_METADATA_VALUE_LENGTH = 1024
 #: namespace is reserved now so claiming it later needs no migration.
 RESERVED_METADATA_PREFIX = "cyberfs."
 
+# --- trash -----------------------------------------------------------------
+#
+#: How many nodes one "empty the trash" request may destroy. A constant and not
+#: a setting, deliberately: this bounds an *irreversible* bulk operation, and a
+#: deployment free to raise it is free to turn one request into an unbounded
+#: delete. It counts NODES rather than trash entries because a single entry is
+#: the root of a subtree of unbounded size -- bounding entries would bound
+#: nothing. A request that runs out of budget stops and reports what remains, so
+#: emptying a large trash is several calls rather than one long transaction.
+TRASH_PURGE_NODE_BUDGET = 1000
+
 
 class NodeKind(StrEnum):
     FOLDER = "folder"
