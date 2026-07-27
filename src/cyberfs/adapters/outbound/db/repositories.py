@@ -36,10 +36,11 @@ from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node, No
 
 # Re-exported below so every existing caller -- and every paginated surface
 # added later -- keeps importing its cursor helpers from one place.
-from cyberfs.domain.pagination import decode_cursor, encode_cursor
+from cyberfs.domain.pagination import decode_cursor, encode_cursor, encode_keyed_cursor
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
+from cyberfs.domain.search import SearchFilters, TagFilters, TagMatch, TagUsage
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
 
@@ -238,50 +239,124 @@ class SqlNodeRepository:
     async def search(
         self,
         subject: str,
+        filters: SearchFilters,
         *,
-        term: str | None = None,
-        tags: Sequence[str] = (),
-        key: str | None = None,
-        value: str | None = None,
         limit: int,
-    ) -> tuple[Node, ...]:
+        after: tuple[str, str] | None = None,
+    ) -> Page[Node]:
         """Metadata-only. Content is never indexed or matched.
 
-        Every supplied filter narrows: a name substring, each tag, and the
-        metadata key (optionally pinned to a value) are ANDed together. Each tag
-        is its own EXISTS rather than one `IN` with a count, so "carries all of
-        these" cannot be satisfied by carrying one of them repeatedly.
+        Every supplied filter narrows: a name substring, the tags, and the
+        metadata key (optionally pinned to a value) are ANDed together, whatever
+        the tag match mode -- the mode governs only how the tags combine with
+        each other.
+
+        Ordered by `(normalized_name, id)`. The identifier is what makes the
+        order total: names are unique only among siblings, and a search spans
+        parents, so a cursor holding the name alone could not say which of two
+        matching `notes.md` the next page starts after.
+
+        `after` arrives already decoded, so nothing here parses a cursor.
+        """
+        stmt = self.search_statement(subject, filters, after)
+        rows = list((await self._session.execute(stmt.limit(limit + 1))).scalars())
+        return _paginate(
+            rows,
+            limit,
+            mappers.node_from_row,
+            lambda r: encode_keyed_cursor(filters.fingerprint, str(r.id), r.normalized_name),
+        )
+
+    @classmethod
+    def search_statement(
+        cls, subject: str, filters: SearchFilters, after: tuple[str, str] | None = None
+    ) -> Select[tuple[m.NodeRow]]:
+        """The scoped, filtered, ordered SELECT `search` runs.
+
+        A classmethod free of the session so a test can compile it and inspect its
+        `WHERE` without a database. That matters for one rule in particular: every
+        supplied filter is a separate operand of the *top-level* conjunction, so
+        the tag match mode cannot loosen the name or the metadata filter however
+        the tags themselves combine.
+        """
+        conditions = cls._visible_to(subject)
+        if filters.term:
+            conditions.append(m.NodeRow.normalized_name.ilike(f"%{_escape_like(filters.term)}%"))
+        conditions.extend(_tag_conditions(filters))
+        if filters.key is not None:
+            pair = [
+                m.NodeMetadataRow.node_id == m.NodeRow.id,
+                m.NodeMetadataRow.key == filters.key,
+            ]
+            if filters.value is not None:
+                pair.append(m.NodeMetadataRow.value == filters.value)
+            conditions.append(select(m.NodeMetadataRow.id).where(*pair).exists())
+        if after is not None:
+            conditions.append(_search_cursor_predicate(after))
+        return (
+            select(m.NodeRow).where(*conditions).order_by(m.NodeRow.normalized_name, m.NodeRow.id)
+        )
+
+    async def tag_counts(
+        self,
+        subject: str,
+        filters: TagFilters,
+        *,
+        limit: int,
+        after: str | None = None,
+    ) -> Page[TagUsage]:
+        """The caller's own tag vocabulary, with per-caller usage counts.
+
+        Aggregated over the same scoped, live node set `search` walks, which is
+        what makes the count agree with what the tag returns as a filter. A tag
+        whose last carrier was trashed or purged has no row to report, so no
+        count is ever zero.
+
+        Ordered by tag, not by count: a count changes whenever any node in reach
+        is labelled, so a tag could cross a page boundary mid-walk and be skipped
+        or repeated. A tag's own spelling never changes.
+        """
+        uses = func.count().label("uses")
+        stmt = (
+            select(m.NodeTagRow.tag, uses)
+            .join(m.NodeRow, m.NodeRow.id == m.NodeTagRow.node_id)
+            .where(*self._visible_to(subject))
+            .group_by(m.NodeTagRow.tag)
+            .order_by(m.NodeTagRow.tag)
+        )
+        if filters.prefix is not None:
+            # Anchored, so `ix_node_tags_tag` serves it -- unlike the unanchored
+            # substring match a name search is stuck with.
+            stmt = stmt.where(m.NodeTagRow.tag.like(f"{_escape_like(filters.prefix)}%"))
+        if after is not None:
+            stmt = stmt.where(m.NodeTagRow.tag > after)
+        rows = list((await self._session.execute(stmt.limit(limit + 1))).all())
+        return _paginate(
+            rows,
+            limit,
+            lambda r: TagUsage(tag=r.tag, count=int(r.uses)),
+            lambda r: encode_keyed_cursor(filters.fingerprint, r.tag),
+        )
+
+    @staticmethod
+    def _visible_to(subject: str) -> list[ColumnElement[bool]]:
+        """The live nodes a caller may search: owned, or actively granted.
+
+        One definition, used by the search and by the tag inventory, so the
+        inventory cannot drift into counting something the search would not
+        return. Only active grants make a node discoverable: a pending share is
+        invisible to the recipient, search included.
         """
         owned = select(m.UserRow.id).where(m.UserRow.subject == subject).scalar_subquery()
-        # Only active grants make a node discoverable: a pending share is
-        # invisible to the recipient, search included.
         granted = select(m.GrantRow.node_id).where(
             m.GrantRow.subject == subject, m.GrantRow.pending.is_(False)
         )
-        # Annotated because the list starts with comparisons and later gains
-        # `EXISTS` clauses; inference from the first elements would reject them.
-        conditions: list[ColumnElement[bool]] = [
+        # Annotated because callers append `EXISTS` clauses; inference from these
+        # two comparisons alone would reject them.
+        return [
             m.NodeRow.deleted_at.is_(None),
             (m.NodeRow.owner_id == owned) | (m.NodeRow.id.in_(granted)),
         ]
-        if term:
-            conditions.append(m.NodeRow.normalized_name.ilike(f"%{_escape_like(term)}%"))
-        for tag in tags:
-            conditions.append(
-                select(m.NodeTagRow.id)
-                .where(m.NodeTagRow.node_id == m.NodeRow.id, m.NodeTagRow.tag == tag)
-                .exists()
-            )
-        if key is not None:
-            pair = [m.NodeMetadataRow.node_id == m.NodeRow.id, m.NodeMetadataRow.key == key]
-            if value is not None:
-                pair.append(m.NodeMetadataRow.value == value)
-            conditions.append(select(m.NodeMetadataRow.id).where(*pair).exists())
-
-        result = await self._session.execute(
-            select(m.NodeRow).where(*conditions).order_by(m.NodeRow.normalized_name).limit(limit)
-        )
-        return tuple(mappers.node_from_row(r) for r in result.scalars())
 
     # --- tags and metadata ---------------------------------------------
 
@@ -669,6 +744,45 @@ def _child_cursor_predicate(raw: str) -> ColumnElement[bool]:
             & (m.NodeRow.normalized_name == name)
             & (m.NodeRow.id > uuid.UUID(node_id))
         )
+    )
+
+
+def _tag_conditions(filters: SearchFilters) -> list[ColumnElement[bool]]:
+    """The tag filter, in whichever mode was asked for.
+
+    All-of is one `EXISTS` per tag, so "carries all of these" cannot be satisfied
+    by carrying one of them repeatedly. Any-of is a single `EXISTS` over an `IN`,
+    which is both the correct union and cheaper than the form it replaces.
+    """
+    if not filters.tags:
+        return []
+    if filters.match is TagMatch.ANY:
+        return [
+            select(m.NodeTagRow.id)
+            .where(m.NodeTagRow.node_id == m.NodeRow.id, m.NodeTagRow.tag.in_(filters.tags))
+            .exists()
+        ]
+    return [
+        select(m.NodeTagRow.id)
+        .where(m.NodeTagRow.node_id == m.NodeRow.id, m.NodeTagRow.tag == tag)
+        .exists()
+        for tag in filters.tags
+    ]
+
+
+def _search_cursor_predicate(after: tuple[str, str]) -> ColumnElement[bool]:
+    """Where the previous page left off, under `(normalized_name, id)`.
+
+    The same tuple comparison the `ORDER BY` sorts on, evaluated in the database
+    under the same collation, so the two cannot disagree about what "after"
+    means.
+    """
+    node_id, name = after
+    # Well-formedness of the identifier is the use case's business, checked when
+    # it read the cursor; by here it is a key, not caller input.
+    edge = uuid.UUID(node_id)
+    return (m.NodeRow.normalized_name > name) | (
+        (m.NodeRow.normalized_name == name) & (m.NodeRow.id > edge)
     )
 
 

@@ -44,15 +44,16 @@ from cyberfs.domain.nodes import (
     NodeKind,
     NodePath,
     normalize_name,
-    normalize_tag,
     validate_metadata,
     validate_name,
     validate_tags,
 )
+from cyberfs.domain.pagination import decode_cursor, decode_keyed_cursor
 from cyberfs.domain.permissions import resolve_effective_role
 from cyberfs.domain.ports.repositories import Page, UnitOfWork
 from cyberfs.domain.ports.storage import ObjectStore
 from cyberfs.domain.s3.namespace import SHARED_PREFIX
+from cyberfs.domain.search import SearchFilters, TagFilters, TagMatch, TagUsage
 from cyberfs.domain.sharing import Role
 from cyberfs.domain.users import User
 
@@ -161,27 +162,54 @@ class NodeService:
         tags: Sequence[str] = (),
         key: str | None = None,
         value: str | None = None,
+        tag_match: TagMatch = TagMatch.ALL,
         limit: int,
-    ) -> tuple[Node, ...]:
+        cursor: str | None = None,
+    ) -> Page[Node]:
         """Metadata only. Content is never indexed, so it can never be matched.
 
-        Every filter narrows. At least one is required: an unfiltered search
-        would be a listing of everything the caller can reach, which is what the
-        tree walk is for.
+        Every filter narrows, and the filter set is built once here so that the
+        fingerprint a cursor carries and the fingerprint a request implies come
+        from the same code path. The cursor is read here too, for the same
+        reason: the repository is handed a decoded sort key and never sees a
+        token. The access scope is resolved in the query, not here -- there is no
+        per-node authorization to do, because nothing outside the scope is ever
+        returned to compare against.
         """
-        cleaned = (term or "").strip()
-        normalized = [normalize_tag(t) for t in tags if normalize_tag(t)]
-        if value is not None and key is None:
-            raise ValidationError("a metadata value needs the key it belongs to")
-        if not cleaned and not normalized and key is None:
-            raise ValidationError("a search needs a name, a tag, or a metadata key")
+        filters = SearchFilters.of(term=term, tags=tags, match=tag_match, key=key, value=value)
         return await uow.nodes.search(
             user.subject,
-            term=cleaned or None,
-            tags=normalized,
-            key=key,
-            value=value,
+            filters,
             limit=min(limit, self._page_size_max),
+            after=_search_key(cursor, filters.fingerprint),
+        )
+
+    async def tag_inventory(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        *,
+        prefix: str | None = None,
+        limit: int,
+        cursor: str | None = None,
+    ) -> Page[TagUsage]:
+        """The caller's own tag vocabulary, so a UI can offer it back to them.
+
+        Authenticated only: like `search`, the scope is the query's, and the
+        counts it reports are the caller's own -- never a property of the tag.
+        Nothing here writes, so nothing here invalidates a cache.
+        """
+        filters = TagFilters.of(prefix)
+        after: str | None = None
+        if cursor is not None:
+            (after,) = decode_keyed_cursor(
+                decode_cursor(cursor), fingerprint=filters.fingerprint, fields=1
+            )
+        return await uow.nodes.tag_counts(
+            user.subject,
+            filters,
+            limit=min(limit, self._page_size_max),
+            after=after,
         )
 
     # --- labels --------------------------------------------------------
@@ -893,6 +921,24 @@ class NodeService:
         existing = await uow.nodes.get_child_by_name(parent_id, normalized_name)
         if existing is not None and existing.id != excluding:
             raise NameTakenError("a sibling already uses that name", parent_id=str(parent_id))
+
+
+def _search_key(cursor: str | None, fingerprint: str) -> tuple[str, str] | None:
+    """The `(id, normalized_name)` a search cursor names, or nothing.
+
+    Read here rather than in the repository so the refusals -- a mangled token, a
+    token issued for other filters, a well-signed token naming something that is
+    not an identifier -- are raised by code every adapter shares and a unit test
+    can reach without a database.
+    """
+    if cursor is None:
+        return None
+    node_id, name = decode_keyed_cursor(decode_cursor(cursor), fingerprint=fingerprint, fields=2)
+    try:
+        uuid.UUID(node_id)
+    except ValueError as exc:
+        raise ValidationError("cursor is not valid") from exc
+    return node_id, name
 
 
 def _ensure_not_reserved_root_name(parent: Node, name: str) -> None:

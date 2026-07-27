@@ -346,7 +346,7 @@ async def test_search_by_tag_finds_the_tagged_node() -> None:
 
     found = await svc.search(uow, user, None, tags=["urgent"], limit=10)
 
-    assert [n.id for n in found] == [tagged.node.id]
+    assert [n.id for n in found.items] == [tagged.node.id]
 
 
 async def test_search_by_tag_is_case_insensitive() -> None:
@@ -356,7 +356,7 @@ async def test_search_by_tag_is_case_insensitive() -> None:
     folder = await a_folder(uow, user, svc)
     await svc.replace_tags(uow, user, folder.node.id, ["Urgent"], now=LATER)
 
-    assert len(await svc.search(uow, user, None, tags=["URGENT"], limit=10)) == 1
+    assert len((await svc.search(uow, user, None, tags=["URGENT"], limit=10)).items) == 1
 
 
 async def test_several_tags_narrow_rather_than_widen() -> None:
@@ -370,7 +370,7 @@ async def test_several_tags_narrow_rather_than_widen() -> None:
 
     found = await svc.search(uow, user, None, tags=["a", "b"], limit=10)
 
-    assert [n.id for n in found] == [both.node.id]
+    assert [n.id for n in found.items] == [both.node.id]
 
 
 async def test_search_by_metadata_key_alone() -> None:
@@ -380,8 +380,8 @@ async def test_search_by_metadata_key_alone() -> None:
     folder = await a_folder(uow, user, svc)
     await svc.replace_metadata(uow, user, folder.node.id, [("source", "sap")], now=LATER)
 
-    assert len(await svc.search(uow, user, None, key="source", limit=10)) == 1
-    assert len(await svc.search(uow, user, None, key="other", limit=10)) == 0
+    assert len((await svc.search(uow, user, None, key="source", limit=10)).items) == 1
+    assert len((await svc.search(uow, user, None, key="other", limit=10)).items) == 0
 
 
 async def test_search_by_metadata_key_and_value() -> None:
@@ -391,8 +391,10 @@ async def test_search_by_metadata_key_and_value() -> None:
     folder = await a_folder(uow, user, svc)
     await svc.replace_metadata(uow, user, folder.node.id, [("source", "sap")], now=LATER)
 
-    assert len(await svc.search(uow, user, None, key="source", value="sap", limit=10)) == 1
-    assert len(await svc.search(uow, user, None, key="source", value="other", limit=10)) == 0
+    assert len((await svc.search(uow, user, None, key="source", value="sap", limit=10)).items) == 1
+    assert (
+        len((await svc.search(uow, user, None, key="source", value="other", limit=10)).items) == 0
+    )
 
 
 async def test_a_name_and_a_tag_narrow_together() -> None:
@@ -406,4 +408,4 @@ async def test_a_name_and_a_tag_narrow_together() -> None:
 
     found = await svc.search(uow, user, "report", tags=["keep"], limit=10)
 
-    assert [n.id for n in found] == [match.node.id]
+    assert [n.id for n in found.items] == [match.node.id]

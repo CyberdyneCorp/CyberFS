@@ -27,6 +27,7 @@ from cyberfs.domain.nodes import (
 )
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.s3.access_key import S3AccessKey
+from cyberfs.domain.search import TagUsage
 from cyberfs.domain.sharing import Grant, PublicLink
 from cyberfs.domain.stats import JobStatus, TenantStatistics, UserStorage
 
@@ -144,11 +145,37 @@ class NodePage(BaseModel):
 
 
 class SearchResults(BaseModel):
+    """An unpaginated list of nodes -- `shared-with-me` and nothing else.
+
+    Search answers with `NodePage`: adding `next_cursor` here would advertise
+    pagination on a route that has none, and a field that is structurally always
+    null is worse than an absent one.
+    """
+
     items: list[NodeSummary]
 
     @classmethod
     def of(cls, nodes: tuple[Node, ...]) -> SearchResults:
         return cls(items=[NodeSummary.of(node) for node in nodes])
+
+
+class TagCount(BaseModel):
+    """A tag and how many of the caller's own reachable nodes carry it."""
+
+    tag: str
+    count: int
+
+
+class TagPage(BaseModel):
+    items: list[TagCount]
+    next_cursor: str | None = None
+
+    @classmethod
+    def of(cls, page: Page[TagUsage]) -> TagPage:
+        return cls(
+            items=[TagCount(tag=usage.tag, count=usage.count) for usage in page.items],
+            next_cursor=page.next_cursor,
+        )
 
 
 class TagsRequest(BaseModel):

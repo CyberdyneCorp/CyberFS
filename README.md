@@ -15,7 +15,12 @@ Highlights:
   alongside the name (`PUT /api/v1/nodes/{id}/tags`,
   `PUT /api/v1/nodes/{id}/metadata`). Both replace wholesale rather than merging,
   so an empty list clears them. Search filters combine with AND: repeating `tag`
-  requires every one of them, and `value` pins the `key` it accompanies.
+  requires every one of them unless `tag_match=any` is asked for, and `value`
+  pins the `key` it accompanies. **Search paginates** — it answers with a cursor
+  whenever more matches exist, ordered by name with ties broken by identifier, and
+  a cursor is only valid for the filters it was issued for. `GET /api/v1/tags`
+  lists the tags in use with their usage counts; those counts cover only the
+  nodes that caller can search, so they are **per caller and not global**.
   **Tags and metadata are stored unencrypted**, because searchable means indexed
   — anything placed in them is readable by whoever can read the database, and by
   administrators. File *content* stays encrypted and is never indexed.

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import base64
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections import Counter
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import datetime
 from types import TracebackType
 
@@ -23,12 +24,27 @@ from cyberfs.domain.audit import AuditProtocol, AuditRecord
 from cyberfs.domain.errors import NotFoundError
 from cyberfs.domain.keys import UserKey, WrappedDataKey
 from cyberfs.domain.nodes import RESERVED_METADATA_PREFIX, FileVersion, Node
+from cyberfs.domain.pagination import encode_cursor, encode_keyed_cursor
 from cyberfs.domain.ports.repositories import Page
 from cyberfs.domain.ports.storage import StoredObject
 from cyberfs.domain.s3.access_key import S3AccessKey
 from cyberfs.domain.s3.multipart import MultipartPart, MultipartUpload
+from cyberfs.domain.search import SearchFilters, TagFilters, TagMatch, TagUsage
 from cyberfs.domain.sharing import Grant, PublicLink, Role
 from cyberfs.domain.users import QuotaUsage, User
+
+
+def _fake_page[T](items: Sequence[T], limit: int, to_cursor: Callable[[T], str]) -> Page[T]:
+    """The sentinel-row trim the SQL repository does, on an in-memory list.
+
+    Uses the production codec, so a cursor this fake issues is one the use case
+    reads back with no translation -- there is no second cursor dialect here for
+    a test to accidentally assert against.
+    """
+    visible = items[:limit]
+    has_more = len(items) > limit
+    cursor = encode_cursor(to_cursor(visible[-1])) if has_more and visible else None
+    return Page(items=tuple(visible), next_cursor=cursor)
 
 
 class FakeUserRepository:
@@ -167,27 +183,70 @@ class FakeNodeRepository:
     async def search(
         self,
         subject: str,
+        filters: SearchFilters,
         *,
-        term: str | None = None,
-        tags: Sequence[str] = (),
-        key: str | None = None,
-        value: str | None = None,
         limit: int,
-    ) -> tuple[Node, ...]:
-        matches = []
-        for node in self.by_id.values():
-            if node.is_deleted:
+        after: tuple[str, str] | None = None,
+    ) -> Page[Node]:
+        """Orders and slices as the SQL does, but sees no grants.
+
+        The access scope is deliberately absent: this fake has no view of grants
+        and `FakeUnitOfWork` models no foreign keys, so a scope assertion here
+        would prove nothing. Scope lives in the integration suite. Nor does it
+        parse a cursor -- the use case hands it a decoded key, so a unit test of
+        the refusal asserts against production code.
+        """
+        matches = [n for n in self.by_id.values() if not n.is_deleted and self._matches(n, filters)]
+        matches.sort(key=lambda n: (n.normalized_name, str(n.id)))
+        if after is not None:
+            node_id, name = after
+            matches = [n for n in matches if (n.normalized_name, str(n.id)) > (name, node_id)]
+        return _fake_page(
+            matches,
+            limit,
+            lambda n: encode_keyed_cursor(filters.fingerprint, str(n.id), n.normalized_name),
+        )
+
+    async def tag_counts(
+        self,
+        subject: str,
+        filters: TagFilters,
+        *,
+        limit: int,
+        after: str | None = None,
+    ) -> Page[TagUsage]:
+        counts: Counter[str] = Counter()
+        for node_id, tags in self.tags.items():
+            node = self.by_id.get(node_id)
+            if node is None or node.is_deleted:
                 continue
-            if term and term.lower() not in node.name.lower():
-                continue
-            if tags and not set(tags) <= self.tags.get(node.id, frozenset()):
-                continue
-            if key is not None:
-                pairs = self.metadata.get(node.id, {})
-                if key not in pairs or (value is not None and pairs[key] != value):
-                    continue
-            matches.append(node)
-        return tuple(matches[:limit])
+            counts.update(tags)
+        found = [TagUsage(tag=tag, count=count) for tag, count in sorted(counts.items())]
+        if filters.prefix is not None:
+            found = [u for u in found if u.tag.startswith(filters.prefix)]
+        if after is not None:
+            found = [u for u in found if u.tag > after]
+        return _fake_page(found, limit, lambda u: encode_keyed_cursor(filters.fingerprint, u.tag))
+
+    def _matches(self, node: Node, filters: SearchFilters) -> bool:
+        carried = self.tags.get(node.id, frozenset())
+        if filters.term and filters.term.lower() not in node.name.lower():
+            return False
+        if filters.tags:
+            wanted = set(filters.tags)
+            # Any-of unions, all-of intersects; the mode governs nothing else.
+            satisfied = (
+                bool(wanted & carried) if filters.match is TagMatch.ANY else wanted <= carried
+            )
+            if not satisfied:
+                return False
+        if filters.key is not None:
+            pairs = self.metadata.get(node.id, {})
+            if filters.key not in pairs:
+                return False
+            if filters.value is not None and pairs[filters.key] != filters.value:
+                return False
+        return True
 
     async def tags_for(self, node_id: uuid.UUID) -> frozenset[str]:
         return self.tags.get(node_id, frozenset())
