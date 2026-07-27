@@ -113,7 +113,8 @@ def test_a_revoked_key_stops_working_immediately(client: TestClient) -> None:
     creds = {"Authorization": f"Basic {token}"}
     assert propfind(client, "/webdav", creds, depth="0").status_code == 207
 
-    revoked = client.delete(f"/api/v1/me/s3-keys/{minted['key_id']}", headers=ALICE)
+    # The path takes the access key id; there is no separate `key_id` field.
+    revoked = client.delete(f"/api/v1/me/s3-keys/{minted['access_key_id']}", headers=ALICE)
     assert revoked.status_code in (HTTPStatus.OK, HTTPStatus.NO_CONTENT), revoked.text
 
     assert propfind(client, "/webdav", creds, depth="0").status_code == HTTPStatus.UNAUTHORIZED
