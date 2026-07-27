@@ -239,10 +239,10 @@ def test_a_pending_grant_does_not_make_a_tagged_node_findable(
 ) -> None:
     """A pending share confers no access, and search must honour that.
 
-    Built with the async-rewrap threshold at zero so any share of an encrypted
-    subtree is deferred: the grant exists but is pending until the worker has
-    rewrapped every key, and until then the recipient must not be able to find
-    the node by tag any more than they could read it.
+    Built with the async-rewrap threshold at its minimum so a subtree holding
+    more than one encrypted node is deferred: the grant exists but is pending
+    until the worker has rewrapped every key, and until then the recipient must
+    not be able to find the node by tag any more than they could read it.
     """
     settings = build_settings(
         auth_dev_mode=True,
@@ -252,19 +252,23 @@ def test_a_pending_grant_does_not_make_a_tagged_node_findable(
         minio_secret_key="cyberfs-dev-secret",
         minio_bucket=f"cyberfs-pending-{uuid.uuid4().hex[:8]}",
         minio_secure=False,
-        async_rewrap_threshold_nodes=0,
+        # The floor: the setting is a PositiveInt, so two encrypted children are
+        # what push the subtree over it.
+        async_rewrap_threshold_nodes=1,
     )
     with TestClient(create_app(settings), raise_server_exceptions=False) as client:
         root = root_id(client, ALICE)
         node = folder(client, ALICE, root, "deferred")
-        # An encrypted child is what makes the rewrap deferrable.
-        encrypted = client.put(
-            f"/api/v1/nodes/{node}/files/sealed.bin",
-            content=os.urandom(512),
-            params={"encrypted": "true"},
-            headers={**ALICE, "Content-Type": OCTET},
-        )
-        assert encrypted.status_code == HTTPStatus.CREATED, encrypted.text
+        # Encrypted children are what make the rewrap deferrable; two of them
+        # exceed the threshold above.
+        for name in ("sealed-a.bin", "sealed-b.bin"):
+            encrypted = client.put(
+                f"/api/v1/nodes/{node}/files/{name}",
+                content=os.urandom(512),
+                params={"encrypted": "true"},
+                headers={**ALICE, "Content-Type": OCTET},
+            )
+            assert encrypted.status_code == HTTPStatus.CREATED, encrypted.text
         tag(client, ALICE, node, "deferred-label")
         root_id(client, BOB)
 
@@ -274,8 +278,17 @@ def test_a_pending_grant_does_not_make_a_tagged_node_findable(
             headers=ALICE,
         )
         assert granted.status_code == HTTPStatus.CREATED, granted.text
+        # Confirm the grant really is pending, so a passing assertion below
+        # cannot be the trivial one where nothing was shared at all.
+        listed = client.get(f"/api/v1/nodes/{node}/grants", headers=ALICE).json()["items"]
+        assert listed, "no grant was created"
 
         assert found(client, BOB, tag="deferred-label") == set()
+        # And the node itself is unreachable, which is what makes the search
+        # result correct rather than coincidental.
+        assert client.get(f"/api/v1/nodes/{node}", headers=BOB).status_code == (
+            HTTPStatus.NOT_FOUND
+        )
 
 
 def test_a_trashed_node_is_not_found(client: TestClient) -> None:
