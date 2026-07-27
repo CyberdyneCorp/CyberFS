@@ -78,10 +78,18 @@
 
 ## 9. Client verification, on the real server
 
-- [ ] 9.1 Enable the surface on the deployment and confirm `OPTIONS` advertises `DAV: 1`
-- [ ] 9.2 `rclone lsd`/`ls`/`copy`/`cat` against the live surface with a real access key
-- [ ] 9.3 `rclone mount` — the FUSE half — and confirm a file written through the mount is readable over REST
-- [ ] 9.4 Record what each client can and cannot do, including the Class 2 limitation
+- [x] 9.1 Enable the surface on the deployment and confirm `OPTIONS` advertises `DAV: 1` -- on by
+      default, so nothing to enable; verified live: `dav: 1` plus the nine implemented methods
+- [ ] 9.2 `rclone lsd`/`ls`/`copy`/`cat` against the live surface with a real access key -- BLOCKED:
+      rclone is not installed on the dev machine. The protocol was verified directly with curl
+      against production instead (PROPFIND 207, MKCOL/PUT/GET, MOVE, DELETE, byte-identical
+      round trip, revocation), which exercises the same methods rclone uses -- but no real client
+      has mounted it
+- [ ] 9.3 `rclone mount` — the FUSE half — and confirm a file written through the mount is readable
+      over REST. BLOCKED on the same. This is the one unproven claim in the change: the FUSE story
+      rests on rclone mount working, and nobody has run it
+- [ ] 9.4 Record what each client can and cannot do, including the Class 2 limitation -- the Class 2
+      limitation is documented in docs/webdav.md from the protocol, but not from observation
 
 ## 10. Documentation
 
@@ -93,6 +101,8 @@
 ## 11. Verification
 
 - [x] 11.1 `just lint`, `just typecheck`, `just test-unit` clean
-- [ ] 11.2 `just test-integration` green in CI, verified rather than assumed
-- [ ] 11.3 `just test-e2e` green against the deployment
+- [x] 11.2 `just test-integration` green in CI, verified rather than assumed (run 9139ae9: 265 passed,
+      7 skipped, 0 failed -- up from 244, so all 25 WebDAV tests ran)
+- [ ] 11.3 `just test-e2e` green against the deployment -- no WebDAV e2e tests were written; the live
+      verification above was done by hand. Worth adding so it is repeatable rather than a one-off
 - [x] 11.4 `openspec validate add-webdav-surface --strict`
