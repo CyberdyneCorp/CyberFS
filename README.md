@@ -36,6 +36,16 @@ Highlights:
 - **Backup & restore** — scheduled off-site backups to a separate S3 target and
   a verified restore pipeline (see [`docs/restore-runbook.md`](docs/restore-runbook.md)).
 
+Specifications live in [`openspec/specs/`](openspec/specs/), one file per
+capability, and are the living description of what CyberFS does. Proposed changes
+sit in `openspec/changes/` until archived, at which point their deltas are merged
+into those specs. `just ci` fails on a spec that does not validate.
+
+Work that the specs require and that has **not been proved on real
+infrastructure** is listed in
+[`docs/outstanding-verification.md`](docs/outstanding-verification.md) — restoring
+from a real backup, the multi-replica drill, and `MASTER_KEY` custody among them.
+
 ## Stack
 
 - **Python 3.12** (`>=3.12,<3.13`), **FastAPI** + **uvicorn**
