@@ -398,6 +398,48 @@ async def test_two_concurrent_patches_cannot_jointly_exceed_the_maximum(
         assert len(await uow.nodes.tags_for(node.id)) == MAX_TAGS_PER_NODE
 
 
+async def test_a_replace_and_a_patch_cannot_jointly_exceed_the_maximum(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The cross-verb half of the bound, which the lock on `PATCH` alone does not buy.
+
+    A patch reads `MAX - 1` tags under the lock while a replace commits `MAX`
+    outside it; the patch then inserts against a collection that no longer
+    exists and the node ends holding `MAX + 1`. Either the replace loses the
+    patch's tag or the patch is refused -- what may not happen is both landing
+    and the node carrying more than the maximum.
+    """
+    user, node = await a_node(session_factory)
+    svc = a_service()
+    async with SqlUnitOfWork(session_factory) as uow:
+        await uow.nodes.add_tags(
+            node.id, frozenset(f"tag-{i}" for i in range(MAX_TAGS_PER_NODE - 1))
+        )
+        await uow.commit()
+
+    async def patch() -> None:
+        async with SqlUnitOfWork(session_factory) as uow:
+            await svc.patch_tags(uow, user, node.id, add=["from-patch"], now=LATER)
+            await uow.commit()
+
+    async def replace() -> None:
+        async with SqlUnitOfWork(session_factory) as uow:
+            await svc.replace_tags(
+                uow,
+                user,
+                node.id,
+                [f"put-{i}" for i in range(MAX_TAGS_PER_NODE)],
+                now=LATER,
+            )
+            await uow.commit()
+
+    await asyncio.gather(patch(), replace(), return_exceptions=True)
+
+    async with SqlUnitOfWork(session_factory) as uow:
+        held = await uow.nodes.tags_for(node.id)
+    assert len(held) <= MAX_TAGS_PER_NODE, f"node holds {len(held)} tags"
+
+
 async def test_adding_a_tag_the_node_already_carries_does_not_violate_the_constraint(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

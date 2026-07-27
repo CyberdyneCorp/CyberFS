@@ -16,8 +16,11 @@
 
 ## 3. Use cases
 
-- [x] 3.1 `patch_tags` in `application/nodes.py`: take `await uow.lock_subtree(node_id)` as the **first** statement, before the node is read, so the node row, the collection, and the revision all come from inside the critical section; then authorize `EDITOR`, check `If-Match`, validate the delta, merge, check the limit, and apply
+- [x] 3.1 `patch_tags` in `application/nodes.py`: validate the delta first -- it is pure, and a body that will be refused must not reach the lock -- then take `await uow.lock_subtree(node_id)` before the node is read, so the node row, the collection, and the revision all come from inside the critical section; then authorize `EDITOR`, check `If-Match`, merge, check the limit, and apply
 - [x] 3.2 `patch_metadata`: the same shape, same lock, same ordering
+- [x] 3.9 `replace_tags` and `replace_metadata` take the same lock in the same position. A bound only the patching verb respects is not a bound: a patch reading `MAX - 1` under the lock while a replace commits `MAX` outside it leaves the node over the maximum. Serialization is a property of the node, not of a verb
+- [x] 3.10 `replace_metadata` counts the reserved rows it preserves towards `MAX_METADATA_PAIRS`. Validating only the caller's list would let a `PUT` seat a full collection on top of them, so the same documented constant would mean 64 to `PATCH` and 65 to `PUT` on one node
+- [x] 3.11 Record in `design.md` why the lock cannot simply move after `_authorize` -- `Session.get` serves the identity map, so authorizing first would make every read inside the critical section a pre-lock snapshot -- and state the residual plainly rather than describing it as closed
 - [x] 3.3 Set no isolation level on the session or the engine. The lock orders the two transactions; Postgres' default `READ COMMITTED` is what makes the waiter then *read* what the transaction ahead of it committed, and `REPEATABLE READ` would defeat the limit check while leaving the lock in place
 - [x] 3.4 Short-circuit the no-op: when the merged collection equals the current one -- compared under the lock, so the comparison cannot be invalidated before the response -- skip the row writes, the revision bump, the audit record, and the cache invalidation, and return the current state and its unchanged ETag
 - [x] 3.5 On a real change, `node.touch(now)` then `uow.nodes.update(node)` before `_view`, so the response's ETag is the post-patch one. Do not also issue a SQL revision increment; the two together would bump twice
@@ -52,6 +55,10 @@
 - [x] 5.14 A patch on a trashed node raises `NotFoundError`, pinning 3.9
 - [x] 5.15 Removing a tag the node does not carry, or a key it does not have, is a success that changes nothing
 - [x] 5.16 The ETag on a successful patch's response equals the one a following `get` returns
+- [x] 5.17 Both replaces call `uow.lock_subtree` before reading the node, in the same position and pinned the same way as 5.12
+- [x] 5.18 A body that cannot be accepted -- a tag in both directions, a reserved key, an over-long tag -- is refused **without** the lock having been taken, through both verbs
+- [x] 5.19 On a node holding `MAX_METADATA_PAIRS - 1` caller pairs plus one reserved pair, a patch adding one more pair is refused. This is the only observable consequence of reading the collection unfiltered, so it is the only test that can detect a filtered read; the earlier "a reserved pair still makes a no-op a no-op" assertion could not fail, since no legal delta may name a reserved key
+- [x] 5.20 A `PUT` of `MAX_METADATA_PAIRS` pairs onto a node carrying a reserved pair is refused, and one pair fewer succeeds and leaves the node exactly at the maximum
 
 ## 6. Integration tests (real Postgres/Redis/MinIO -- everything that depends on a constraint, on real concurrency, or on a real cache)
 
@@ -67,6 +74,7 @@ and lives in `tests/integration/test_partial_labels.py`.
 - [x] 6.6 Adding a tag that already exists does not raise a unique-constraint violation -- the `ON CONFLICT` path, again only real against Postgres
 - [x] 6.7 A patched tag is findable by the existing tag search, and a removed one is not
 - [x] 6.8 A `PUT` after a `PATCH` replaces the whole set, including tags the patch added
+- [x] 6.9 **Concurrency, cross-verb:** with the node one tag below `MAX_TAGS_PER_NODE`, a `PATCH` and a `PUT` race. Whichever ordering wins, the node may not end up over the maximum -- the half of the bound that the lock on `PATCH` alone does not buy, and the case 6.5 cannot reach because both its writers hold the lock
 - [x] 6.9 A metadata pair written directly into the reserved namespace at the repository survives a `PUT` of an empty metadata collection, is absent from the `GET` and `PUT` responses, and is refused when a `PATCH` names it as a removal. This is the constraint-adjacent behaviour the fake cannot show, since the fake's replace is a dict assignment
 - [x] 6.10 **Cache:** warm the cached node view and its parent's listing, issue a no-op patch, and assert both entries survive; then issue a real patch and assert both are gone before the response. The only tier where the "invalidates nothing" guarantee is more than an assertion about a fake
 - [x] 6.11 The `ETag` header a patch returns is accepted as the `If-Match` of the next patch, and a `GET` in between reports the same value

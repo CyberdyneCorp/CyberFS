@@ -16,34 +16,23 @@ Highlights:
   `PUT /api/v1/nodes/{id}/metadata`). Both replace wholesale rather than merging,
   so an empty list clears them. Search filters combine with AND: repeating `tag`
   requires every one of them, and `value` pins the `key` it accompanies.
+  **Tags and metadata are stored unencrypted**, because searchable means indexed
+  — anything placed in them is readable by whoever can read the database, and by
+  administrators. File *content* stays encrypted and is never indexed.
 - **Partial label updates** — `PATCH /api/v1/nodes/{id}/tags` takes `add` and
   `remove`; `PATCH /api/v1/nodes/{id}/metadata` takes `set` pairs and `remove`
   keys. They *merge*: nothing the request does not name is touched, so
   contributing one tag costs no read-modify-write round trip and two callers
-  patching disjoint labels both land. A patch that turns out to change nothing is
-  a success that writes nothing: no revision bump, no activity record, and the
-  same `ETag` as before. Patches to one node are applied one at a time — that is
-  what makes the per-node maximum a real bound and lets a patch know it changed
-  nothing — so concurrent patches on the same node are ordered rather than
-  simultaneous, and two that would jointly cross the maximum do not both succeed.
-  Naming the same label as both an addition and a removal is refused rather than
-  ordered, and a `PUT` still wins outright over every tag it does not name,
-  because replacing states a complete collection while patching states a change
-  to one.
-- **Partial label updates** — `PATCH /api/v1/nodes/{id}/tags` takes `add` and
-  `remove`; `PATCH /api/v1/nodes/{id}/metadata` takes `set` pairs and `remove`
-  keys. They *merge*: anything the request does not name is left alone, so
-  contributing one tag costs no read-modify-write round trip and two callers
   patching disjoint labels both land — the rows are written individually rather
   than as a whole-collection replace. A patch that turns out to change nothing is
   a success that writes nothing: no revision bump, no activity record, and the
-  same `ETag` as before. Naming the same label as both an addition and a removal
-  is refused rather than ordered, and a `PUT` still wins outright over every tag
-  it does not name, because replacing states a complete collection while patching
-  states a change to one.
-  **Tags and metadata are stored unencrypted**, because searchable means indexed
-  — anything placed in them is readable by whoever can read the database, and by
-  administrators. File *content* stays encrypted and is never indexed.
+  same `ETag` as before. Label writes to one node are applied one at a time,
+  whether they arrive by `PATCH` or by `PUT` — that is what makes the per-node
+  maximum a real bound and lets a patch know it changed nothing — so two writes
+  that would jointly cross the maximum do not both succeed. Naming the same label
+  as both an addition and a removal is refused rather than ordered, and a `PUT`
+  still wins outright over every tag it does not name, because replacing states a
+  complete collection while patching states a change to one.
 - **Content digest** — every version carries the SHA-256 of its plaintext,
   reported on the node and on each version, so a client can verify what it
   downloaded. It is withheld from the admin surface: a plaintext hash would let a

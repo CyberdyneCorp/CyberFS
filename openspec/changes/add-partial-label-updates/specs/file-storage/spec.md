@@ -58,7 +58,11 @@ A node SHALL carry key/value string pairs, so an integration can record facts ab
 
 ### Requirement: Partial label updates
 
-CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, and to set and delete individual metadata keys, in one request that merges with what the node already carries rather than replacing it. A partial update SHALL name what it adds and what it removes explicitly, and SHALL NOT rely on any in-band value meaning removal. A partial update SHALL NOT alter any label it does not name. Partial updates to one node SHALL be applied one at a time, so that both the maximum a node may hold and the determination that an update changes nothing are decided against a state no other update can alter before the update lands. Concurrent partial updates to one node SHALL therefore be ordered rather than simultaneous, and each SHALL see the effect of those ordered ahead of it.
+CyberFS SHALL allow a caller with `EDITOR` to add and remove individual tags, and to set and delete individual metadata keys, in one request that merges with what the node already carries rather than replacing it. A partial update SHALL name what it adds and what it removes explicitly, and SHALL NOT rely on any in-band value meaning removal. A partial update SHALL NOT alter any label it does not name. Label updates to one node SHALL be applied one at a time whether they replace a collection wholesale or merge a change into it, so that both the maximum a node may hold and the determination that an update changes nothing are decided against a state no other label update can alter before the update lands. Concurrent label updates to one node SHALL therefore be ordered rather than simultaneous, and each SHALL see the effect of those ordered ahead of it.
+
+#### Scenario: A wholesale replace cannot carry a node past the maximum
+- **WHEN** a caller replaces a node's metadata with the permitted maximum number of pairs and CyberFS already holds one or more reserved pairs on that node
+- **THEN** the replace SHALL be refused and change nothing, because the reserved pairs survive it and would leave the node holding more rows than the maximum a partial update is measured against
 
 #### Scenario: Tags are added and removed together
 

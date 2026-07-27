@@ -439,18 +439,136 @@ async def test_a_reserved_pair_is_absent_from_what_a_patch_returns() -> None:
     assert resulting == {"mine": "x"}
 
 
-async def test_a_reserved_pair_still_makes_a_patch_a_no_op() -> None:
-    """It is filtered out of a response, not out of the state being compared."""
+async def test_a_reserved_pair_occupies_a_row_a_patch_cannot_have() -> None:
+    """The limit, decided through the service rather than the pure function.
+
+    This is the only observable consequence of `patch_metadata` reading the
+    collection unfiltered: a reserved pair is invisible in every response, so the
+    sole way to detect that it was counted is a patch that the row it occupies
+    pushes over the maximum. Filtering `current` here -- the plausible mistake,
+    since the response *is* filtered -- makes this patch succeed and the node
+    carry `MAX_METADATA_PAIRS + 1` rows.
+    """
     uow = FakeUnitOfWork()
     user = await provision(uow)
     svc = service()
     folder = await a_folder(uow, user, svc)
-    await uow.nodes.set_metadata(folder.node.id, {f"{RESERVED_METADATA_PREFIX}trusted": "yes"})
-    before = revision_of(uow, folder.node.id)
+    await uow.nodes.set_metadata(
+        folder.node.id,
+        {
+            f"{RESERVED_METADATA_PREFIX}trusted": "yes",
+            **{f"k{i}": "v" for i in range(MAX_METADATA_PAIRS - 1)},
+        },
+    )
 
-    await svc.patch_metadata(uow, user, folder.node.id, remove=["absent"], now=LATER)
+    with pytest.raises(ValidationError, match=str(MAX_METADATA_PAIRS)):
+        await svc.patch_metadata(uow, user, folder.node.id, pairs=[("one-more", "v")], now=LATER)
 
-    assert revision_of(uow, folder.node.id) == before
+
+async def test_a_replace_cannot_seat_a_full_collection_on_top_of_a_reserved_pair() -> None:
+    """The same maximum, enforced identically by the other verb.
+
+    The repository preserves reserved rows through a replace, so a `PUT` that
+    validated only its own list would leave the node holding one row more than a
+    `PATCH` will allow -- the documented constant meaning 64 to one verb and 65 to
+    the other on the same node.
+    """
+    uow = FakeUnitOfWork()
+    user = await provision(uow)
+    svc = service()
+    folder = await a_folder(uow, user, svc)
+    await uow.nodes.set_metadata(folder.node.id, {f"{RESERVED_METADATA_PREFIX}origin": "system"})
+
+    with pytest.raises(ValidationError, match=str(MAX_METADATA_PAIRS)):
+        await svc.replace_metadata(
+            uow,
+            user,
+            folder.node.id,
+            [(f"k{i}", "v") for i in range(MAX_METADATA_PAIRS)],
+            now=LATER,
+        )
+
+    # One short of the maximum still fits alongside the reserved row.
+    await svc.replace_metadata(
+        uow,
+        user,
+        folder.node.id,
+        [(f"k{i}", "v") for i in range(MAX_METADATA_PAIRS - 1)],
+        now=LATER,
+    )
+    assert len(await uow.nodes.metadata_for(folder.node.id)) == MAX_METADATA_PAIRS
+
+
+@pytest.mark.parametrize("collection", ["tags", "metadata"])
+async def test_a_wholesale_replace_locks_the_node_before_reading_it(collection: str) -> None:
+    """A replace takes the same lock a patch does, in the same position.
+
+    Without it the per-node maximum is advisory across verbs: a patch reads 63
+    tags under the lock, a replace commits 64, the patch inserts its row and the
+    node holds 65. The race itself is run in the integration suite; what is
+    pinned here is that the replace participates in the serialization at all.
+    """
+    uow = FakeUnitOfWork()
+    user = await provision(uow)
+    svc = service()
+    folder = await a_folder(uow, user, svc)
+    node_id = folder.node.id
+
+    events: list[str] = []
+    reading = uow.nodes.get
+
+    async def record_lock(target: uuid.UUID) -> None:
+        events.append(f"lock:{target}")
+
+    async def record_get(target: uuid.UUID):
+        events.append(f"get:{target}")
+        return await reading(target)
+
+    uow.lock_subtree = record_lock  # type: ignore[method-assign]
+    uow.nodes.get = record_get  # type: ignore[method-assign]
+
+    if collection == "tags":
+        await svc.replace_tags(uow, user, node_id, ["one"], now=LATER)
+    else:
+        await svc.replace_metadata(uow, user, node_id, [("k", "v")], now=LATER)
+
+    assert events[0] == f"lock:{node_id}", "the lock must precede every read"
+    assert f"get:{node_id}" in events[1:]
+
+
+@pytest.mark.parametrize(
+    ("write", "kwargs"),
+    [
+        pytest.param("patch_tags", {"add": ["both"], "remove": ["both"]}, id="patch-tags"),
+        pytest.param(
+            "patch_metadata", {"pairs": [("cyberfs.x", "v")]}, id="patch-metadata-reserved"
+        ),
+        pytest.param("replace_tags", {"tags": ["a" * 500]}, id="put-tags-too-long"),
+    ],
+)
+async def test_an_unacceptable_body_is_refused_without_taking_the_lock(
+    write: str, kwargs: dict[str, object]
+) -> None:
+    """Validation is pure, so it costs nothing to run first -- and running it first
+    keeps a body that was never going to be accepted from parking a transaction-
+    scoped advisory lock on the node it names.
+    """
+    uow = FakeUnitOfWork()
+    user = await provision(uow)
+    svc = service()
+    folder = await a_folder(uow, user, svc)
+
+    locks: list[uuid.UUID] = []
+
+    async def record_lock(target: uuid.UUID) -> None:
+        locks.append(target)
+
+    uow.lock_subtree = record_lock  # type: ignore[method-assign]
+
+    with pytest.raises(ValidationError):
+        await getattr(svc, write)(uow, user, folder.node.id, now=LATER, **kwargs)
+
+    assert locks == []
 
 
 # --- preconditions and authorization ---------------------------------------

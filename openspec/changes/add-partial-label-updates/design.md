@@ -150,6 +150,36 @@ rather than at once, and two that would jointly cross a maximum do not both
 succeed: the second reads the first's result and is refused. The spec names that
 outcome rather than leaving it to be discovered.
 
+**`PUT` takes the same lock, or the maximum is not a bound.** It is tempting to
+leave `replace_tags`/`replace_metadata` unserialized on the grounds that a
+replace states a complete collection and so has no merge to lose. That reasoning
+covers the replace and misses the patch: a `PATCH` that reads 63 tags under the
+lock while a `PUT` commits 64 outside it inserts its row against a state that no
+longer exists, and the node ends with 65. The bound is a property of the node,
+not of a verb, so every writer of the collection has to pass through the same
+serialization point for any of them to be able to rely on it. Both replaces
+therefore take `lock_subtree` in the same position the patches do. This is also
+what lets the spec say the maximum holds, rather than that it holds between
+partial updates -- a qualification no caller could act on.
+
+**Why the lock precedes authorization.** Taking the lock as the very first
+statement means an authenticated caller can park a transaction-scoped advisory
+lock on a node id it has no rights to, by sending a well-formed body that will be
+refused a moment later; because `_lock_key` folds the UUID into 31 bits, the id
+need not even exist. Authorizing first would close that, and it is the obvious
+reordering -- but `SqlNodeRepository.get` is `Session.get`, which serves the
+identity map, so the node read that authorization performs would be the read the
+critical section then depends on, taken *before* the lock. Every read after it
+would be served the pre-lock row from the map, the limit check would be back to
+deciding from a stale collection, and the serialization would look present while
+being worthless. Closing it properly needs an expiry the repository port does not
+expose, which is a wider change than this one. What is cheap and is done here:
+the delta is validated before the lock, since validation is pure, so a body that
+was never going to be accepted cannot reach the lock at all. The residual is a
+caller able to serialize label writes on a node it cannot see -- a nuisance
+bounded by one short request, on a lock namespace `move` already shares -- and it
+is recorded rather than described as closed.
+
 Two alternatives were rejected. **Enforcing the cardinality bound in the
 database** with a trigger counting rows per node would keep the endpoint
 lock-free, but it costs a migration this change otherwise does not need, it

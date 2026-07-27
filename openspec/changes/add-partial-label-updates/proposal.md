@@ -35,7 +35,8 @@ it finds there, and a namespace a user can empty is not trustworthy.
   success, not a write.
 - **Limits are checked after the merge.** Adding one tag to a node already at
   `MAX_TAGS_PER_NODE` is refused with the same error a `PUT` would give.
-- **Patches to one node serialize** on the advisory lock `move` already uses.
+- **Label updates to one node serialize** on the advisory lock `move` already
+  uses -- both verbs, since a bound only one of them respects is not a bound.
   Checking a per-node maximum, and deciding that a patch changed nothing, both
   require reading the collection first, and an unserialized read is the lost
   update this endpoint exists to remove. Disjoint patches still both land; they

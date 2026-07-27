@@ -28,6 +28,7 @@ from cyberfs.domain.errors import (
     WouldCreateCycleError,
 )
 from cyberfs.domain.labels import (
+    is_reserved_key,
     merge_metadata,
     merge_tags,
     metadata_change_counts,
@@ -37,6 +38,7 @@ from cyberfs.domain.labels import (
     visible_metadata,
 )
 from cyberfs.domain.nodes import (
+    MAX_METADATA_PAIRS,
     EncryptionDefault,
     Node,
     NodeKind,
@@ -194,11 +196,20 @@ class NodeService:
         if_match: str | None = None,
         now: datetime | None = None,
     ) -> tuple[NodeView, frozenset[str]]:
-        """Replace a node's tags wholesale. Requires `EDITOR`, like renaming."""
+        """Replace a node's tags wholesale. Requires `EDITOR`, like renaming.
+
+        Serialized against partial updates on the same node. A replace states a
+        complete collection, so it has no merge to lose -- but a `PATCH` deciding
+        the per-node maximum from a collection this replace is in the middle of
+        rewriting would decide it from a state that never existed, which is what
+        turns that maximum back into an advisory.
+        """
         moment = now or utcnow()
+        validated = validate_tags(tags)
+        await uow.lock_subtree(node_id)
+
         node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
         _ensure_precondition(node, if_match)
-        validated = validate_tags(tags)
 
         await uow.nodes.replace_tags(node.id, validated)
         node.touch(moment)
@@ -218,11 +229,28 @@ class NodeService:
         if_match: str | None = None,
         now: datetime | None = None,
     ) -> tuple[NodeView, dict[str, str]]:
-        """Replace a node's metadata wholesale. Requires `EDITOR`."""
+        """Replace a node's metadata wholesale. Requires `EDITOR`.
+
+        Serialized against partial updates for the reason `replace_tags` gives.
+        """
         moment = now or utcnow()
+        validated = validate_metadata(pairs)
+        await uow.lock_subtree(node_id)
+
         node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
         _ensure_precondition(node, if_match)
-        validated = validate_metadata(pairs)
+        # The repository preserves reserved rows through a replace, so the
+        # caller's pairs are not the whole collection the node ends up carrying.
+        # Validating only the request would let a replace seat
+        # `MAX_METADATA_PAIRS` pairs on top of them, leaving the node over a
+        # maximum a `PATCH` enforces exactly -- the same constant meaning two
+        # different things depending on the verb.
+        reserved = sum(1 for key in await uow.nodes.metadata_for(node.id) if is_reserved_key(key))
+        if reserved + len(validated) > MAX_METADATA_PAIRS:
+            raise ValidationError(
+                f"a node may carry at most {MAX_METADATA_PAIRS} metadata pairs, "
+                f"and {reserved} of them are already reserved for CyberFS"
+            )
 
         await uow.nodes.replace_metadata(node.id, validated)
         node.touch(moment)
@@ -250,10 +278,19 @@ class NodeService:
         clobber a label it never saw.
         """
         moment = now or utcnow()
-        # First, before the node is read. The per-node maximum and the "changed
-        # nothing" judgement are both decided from the current collection, and an
-        # unserialized read of it is the lost update the row-level writes below
-        # otherwise avoid.
+        # Validated first: it is pure, and a body that was never going to be
+        # accepted should not reach the point of taking a lock.
+        delta = validate_tag_delta(add, remove)
+        # Then the lock, before the node is read. The per-node maximum and the
+        # "changed nothing" judgement are both decided from the current
+        # collection, and an unserialized read of it is the lost update the
+        # row-level writes below otherwise avoid.
+        #
+        # It cannot move after `_authorize` -- which would keep a caller with no
+        # rights on the node from taking the lock at all -- because the session's
+        # identity map would then serve the pre-lock row to every read that
+        # follows, and the serialization would be silently worthless. See
+        # `design.md`, "Why the lock precedes authorization".
         await uow.lock_subtree(node_id)
 
         node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
@@ -261,7 +298,6 @@ class NodeService:
         # the node is out of date, which is true whether or not the delta would
         # have changed anything.
         _ensure_precondition(node, if_match)
-        delta = validate_tag_delta(add, remove)
 
         current = await uow.nodes.tags_for(node.id)
         merged = merge_tags(current, delta)
@@ -301,14 +337,14 @@ class NodeService:
         and which the returned mapping does not show.
         """
         moment = now or utcnow()
+        delta = validate_metadata_delta(pairs, remove)
         await uow.lock_subtree(node_id)
 
         node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
         _ensure_precondition(node, if_match)
-        delta = validate_metadata_delta(pairs, remove)
 
-        # Unfiltered, so a reserved pair still counts towards the maximum and
-        # still makes a no-op a no-op; only what is handed back is filtered.
+        # Unfiltered, so a reserved pair still counts towards the maximum; only
+        # what is handed back is filtered.
         current = await uow.nodes.metadata_for(node.id)
         merged = merge_metadata(current, delta)
         if merged == current:
