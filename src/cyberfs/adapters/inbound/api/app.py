@@ -46,6 +46,7 @@ from cyberfs.adapters.inbound.api.routers import nodes as nodes_router
 from cyberfs.adapters.inbound.api.routers import s3 as s3_router
 from cyberfs.adapters.inbound.api.routers import s3_keys as s3_keys_router
 from cyberfs.adapters.inbound.api.routers import shares as shares_router
+from cyberfs.adapters.inbound.api.routers import webdav as webdav_router
 from cyberfs.adapters.outbound.db.unit_of_work import SqlUnitOfWork
 from cyberfs.application.activity import ActivityService
 from cyberfs.application.admin import AdminService
@@ -56,6 +57,7 @@ from cyberfs.application.s3_auth import S3SignatureVerifier
 from cyberfs.application.s3_keys import S3AccessKeyService
 from cyberfs.application.s3_objects import S3ObjectService
 from cyberfs.application.s3_presign import S3PresignService
+from cyberfs.application.webdav_auth import WebDavAuthenticator
 from cyberfs.domain.ratelimit import FixedWindowLimiter
 from cyberfs.infrastructure.db import create_engine, create_session_factory
 from cyberfs.infrastructure.logging import configure_logging, get_logger
@@ -180,6 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.activity_prune_job = ActivityPruneJob(settings)
     app.state.s3_keys = S3AccessKeyService(keys=app.state.keys)
+    app.state.webdav_authentication = WebDavAuthenticator(app.state.keys)
     # Signature verification lands now (phase 4); the S3 HTTP surface that
     # feeds it a parsed request mounts in a later phase.
     app.state.s3_authenticator = S3SignatureVerifier(
@@ -260,6 +263,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_router.router)
     # The S3-compatible surface is mounted only when enabled -- a deployment
     # without it exposes no such routes at all.
+    # Mounted by default, unlike S3. `webdav_requires_tls` refuses plaintext
+    # outside local/test, which is what makes a default-on Basic surface safe.
+    if settings.webdav_enabled:
+        app.include_router(
+            webdav_router.build_webdav_router(
+                base_path=settings.webdav_base_path,
+                requires_tls=settings.webdav_requires_tls,
+            )
+        )
     if settings.s3_api_enabled:
         app.include_router(s3_router.create_s3_router(settings.s3_base_path))
     if settings.metrics_enabled:

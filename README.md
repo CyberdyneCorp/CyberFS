@@ -33,6 +33,12 @@ Highlights:
 - **Admin dashboard** — deployment-wide stats, per-user storage and quota, audit
   log, live public links, backups, and operations health
   (`/api/v1/admin`); a SvelteKit MVVM front end lives in [`admin/`](admin/).
+- **WebDAV** — a Class 1 surface at `/webdav`, **on by default**, authenticated
+  with an existing S3 access key over Basic. `rclone mount` over it is how CyberFS
+  is exposed as a **FUSE** filesystem, so no driver ships here. Class 2 locking is
+  refused rather than faked, which means Finder and Explorer mount read-only; see
+  [`docs/webdav.md`](docs/webdav.md). Reverses a non-goal recorded in the bootstrap
+  and S3 changes.
 - **Backup & restore** — scheduled off-site backups to a separate S3 target and
   a verified restore pipeline (see [`docs/restore-runbook.md`](docs/restore-runbook.md)).
 

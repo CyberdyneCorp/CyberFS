@@ -158,13 +158,21 @@ class S3Authenticator:
 
     @staticmethod
     def _principal_from_key(key: S3AccessKey) -> Principal:
-        """A key resolves to its owner's subject, never an administrator.
+        return principal_from_key(key)
 
-        Administrator status is stripped *by construction* -- it is simply never
-        set -- so a leaked key can never wield admin, and an admin route (which
-        introspects a fresh token) rejects a key-authenticated caller.
-        """
-        return Principal(subject=key.owner_subject)
+
+def principal_from_key(key: S3AccessKey) -> Principal:
+    """A key resolves to its owner's subject, never an administrator.
+
+    Administrator status is stripped *by construction* -- it is simply never set
+    -- so a leaked key can never wield admin, and an admin route (which
+    introspects a fresh token) rejects a key-authenticated caller.
+
+    Shared with the WebDAV surface rather than restated there: this mapping is
+    the reason a key cannot escalate, and a second copy is a second place for
+    that to stop being true.
+    """
+    return Principal(subject=key.owner_subject)
 
 
 def ensure_bucket_not_managed(operation: str) -> None:

@@ -59,6 +59,11 @@ environment:
   - LOG_LEVEL # default: INFO
   - DATABASE_URL # optional; defaults to the internal postgres service
   - REDIS_URL # optional; defaults to the internal redis service
+  # WebDAV. On by default; set false to expose no WebDAV routes. Authenticates
+  # with an existing S3 access key over HTTP Basic, so the secret is sent on
+  # every request and the surface refuses plaintext outside local/test.
+  - WEBDAV_ENABLED # default: true
+  - WEBDAV_BASE_PATH # default: /webdav
   # Backups (optional)
   - BACKUP_ENABLED # default: false; the only way to turn backups off
   - BACKUP_CRON # default: 0 3 * * * (UTC). Validated at boot; no "off" value.

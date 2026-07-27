@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     # falls back to the request host; issuing a presigned URL requires it.
     s3_public_endpoint: str | None = None
 
+    # --- webdav --------------------------------------------------------
+    # Mounted by DEFAULT, unlike the S3 surface. A filesystem surface nobody
+    # enabled is one nobody uses, and speaking WebDAV is what lets a file manager
+    # reach a deployment configured for nothing in particular.
+    #
+    # The cost is paid by `webdav_requires_tls` below rather than by the default:
+    # Basic authentication carries the secret on every request, so a deployment
+    # that never opted in must not be able to leak one per request.
+    webdav_enabled: bool = True
+    webdav_base_path: str = "/webdav"
+
     # --- backup --------------------------------------------------------
     backup_enabled: bool = False
     backup_cron: str = "0 3 * * *"
@@ -198,6 +209,17 @@ class Settings(BaseSettings):
     backup_history_days: PositiveInt = 90
 
     # --- derived -------------------------------------------------------
+
+    @property
+    def webdav_requires_tls(self) -> bool:
+        """Whether the WebDAV surface refuses a plaintext request.
+
+        True outside local and test. With the surface mounted by default this is
+        the guard that matters: it is the only thing between a deployment nobody
+        configured for WebDAV and a Basic credential travelling in the clear on
+        every request.
+        """
+        return self.environment not in (Environment.LOCAL, Environment.TEST)
 
     @property
     def backup_target_secure(self) -> bool:
