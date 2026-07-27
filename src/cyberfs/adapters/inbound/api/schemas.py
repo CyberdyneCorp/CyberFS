@@ -7,6 +7,7 @@ added to an entity cannot leak into an API response by accident.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -90,11 +91,34 @@ class NodeDetail(NodeSummary):
     path: str
     #: The caller's effective role: `viewer`, `editor`, or `owner`.
     role: str
+    #: Labels on this node. Stored unencrypted so they can be searched.
+    tags: list[str] = Field(default_factory=list)
+    #: Key/value pairs on this node. Also unencrypted, for the same reason.
+    metadata: dict[str, str] = Field(default_factory=dict)
+    #: SHA-256 of the current version's *plaintext*, or null for a folder or an
+    #: empty file. Only ever returned to a caller who may read the content: it
+    #: would otherwise let a holder test whether a user has a specific known
+    #: file even though that file is encrypted.
+    digest: str | None = None
 
     @classmethod
-    def of_view(cls, view: NodeView) -> NodeDetail:
+    def of_view(
+        cls,
+        view: NodeView,
+        *,
+        tags: Iterable[str] = (),
+        metadata: Mapping[str, str] | None = None,
+        digest: str | None = None,
+    ) -> NodeDetail:
         summary = NodeSummary.of(view.node)
-        return cls(**summary.model_dump(), path=view.path, role=view.role.slug)
+        return cls(
+            **summary.model_dump(),
+            path=view.path,
+            role=view.role.slug,
+            tags=sorted(tags),
+            metadata=dict(metadata or {}),
+            digest=digest,
+        )
 
 
 class NodePage(BaseModel):
@@ -115,6 +139,34 @@ class SearchResults(BaseModel):
     @classmethod
     def of(cls, nodes: tuple[Node, ...]) -> SearchResults:
         return cls(items=[NodeSummary.of(node) for node in nodes])
+
+
+class TagsRequest(BaseModel):
+    """The complete tag set for a node. Replaces, never merges."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tags: list[str] = Field(default_factory=list)
+
+
+class MetadataPair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: str
+
+
+class MetadataRequest(BaseModel):
+    """The complete metadata for a node. Replaces, never merges.
+
+    A list of pairs rather than a mapping, so a repeated key reaches the domain
+    and is refused: a mapping would have silently dropped one of the values
+    before anything could object.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: list[MetadataPair] = Field(default_factory=list)
 
 
 class DeleteResult(BaseModel):
@@ -145,6 +197,9 @@ class VersionSummary(BaseModel):
     created_at: datetime
     created_by: str
     is_current: bool = False
+    #: SHA-256 of this version's plaintext, so a caller can verify what they
+    #: downloaded is what was stored.
+    digest: str
 
     @classmethod
     def of(cls, version: FileVersion, *, current: bool = False) -> VersionSummary:
@@ -157,6 +212,7 @@ class VersionSummary(BaseModel):
             created_at=version.created_at,
             created_by=version.created_by,
             is_current=current,
+            digest=version.plaintext_digest,
         )
 
 

@@ -31,6 +31,10 @@ ACTIVITY_ACTIONS: frozenset[AuditAction] = frozenset(
         AuditAction.FILE_DOWNLOADED,
         AuditAction.NODE_CREATED,
         AuditAction.NODE_RENAMED,
+        # Labelling a node is an ordinary operation, so these are pruned with the
+        # rest of a user's activity rather than retained as security records.
+        AuditAction.NODE_TAGS_CHANGED,
+        AuditAction.NODE_METADATA_CHANGED,
         AuditAction.NODE_MOVED,
         AuditAction.NODE_COPIED,
         AuditAction.NODE_DELETED,

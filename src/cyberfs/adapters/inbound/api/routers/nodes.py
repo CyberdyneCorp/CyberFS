@@ -17,14 +17,17 @@ from cyberfs.adapters.inbound.api.schemas import (
     CopyRequest,
     CreateFolderRequest,
     DeleteResult,
+    MetadataRequest,
     MoveRequest,
     NodeDetail,
     NodePage,
     PurgeResult,
     RenameRequest,
     SearchResults,
+    TagsRequest,
 )
-from cyberfs.application.nodes import NodeService
+from cyberfs.application.nodes import NodeService, NodeView
+from cyberfs.domain.ports.repositories import UnitOfWork
 
 router = APIRouter(prefix="/api/v1", tags=["nodes"])
 
@@ -42,12 +45,24 @@ def _with_etag(response: Response, detail: NodeDetail) -> NodeDetail:
     return detail
 
 
+async def _detail(request: Request, uow: UnitOfWork, view: NodeView) -> NodeDetail:
+    """A full node response, carrying its labels and its content digest.
+
+    Every route that returns a `NodeDetail` goes through here, so a caller never
+    has to guess whether a given endpoint populates them.
+    """
+    service = _service(request)
+    tags, metadata = await service.labels_for(uow, view.node.id)
+    digest = await service.current_digest(uow, view.node)
+    return NodeDetail.of_view(view, tags=tags, metadata=metadata, digest=digest)
+
+
 @router.get("/nodes/root", response_model=NodeDetail, summary="The caller's root folder")
 async def get_root(
     request: Request, user: CurrentUser, uow: UnitOfWorkDep, response: Response
 ) -> NodeDetail:
     view = await _service(request).get(uow, user, user.root_folder_id)
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.get("/nodes/{node_id}", response_model=NodeDetail, summary="Node metadata")
@@ -59,7 +74,7 @@ async def get_node(
     response: Response,
 ) -> NodeDetail:
     view = await _service(request).get(uow, user, node_id)
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.get(
@@ -95,7 +110,7 @@ async def create_folder(
         uow, user, node_id, body.name, encryption_default=body.encryption_default
     )
     await uow.commit()
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.patch("/nodes/{node_id}/name", response_model=NodeDetail, summary="Rename a node")
@@ -110,7 +125,7 @@ async def rename_node(
 ) -> NodeDetail:
     view = await _service(request).rename(uow, user, node_id, body.name, if_match=if_match)
     await uow.commit()
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.patch("/nodes/{node_id}/parent", response_model=NodeDetail, summary="Move a node")
@@ -125,7 +140,7 @@ async def move_node(
 ) -> NodeDetail:
     view = await _service(request).move(uow, user, node_id, body.parent_id, if_match=if_match)
     await uow.commit()
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.post(
@@ -153,7 +168,7 @@ async def copy_node(
         content=request.app.state.content,
     )
     await uow.commit()
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.delete("/nodes/{node_id}", response_model=DeleteResult, summary="Move to trash")
@@ -201,6 +216,52 @@ async def purge_node(
     )
 
 
+@router.put(
+    "/nodes/{node_id}/tags",
+    response_model=NodeDetail,
+    summary="Replace a node's tags",
+)
+async def replace_tags(
+    node_id: uuid.UUID,
+    body: TagsRequest,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+    response: Response,
+    if_match: IfMatch = None,
+) -> NodeDetail:
+    """Replaces the whole set; an empty list clears it."""
+    view, _ = await _service(request).replace_tags(uow, user, node_id, body.tags, if_match=if_match)
+    await uow.commit()
+    return _with_etag(response, await _detail(request, uow, view))
+
+
+@router.put(
+    "/nodes/{node_id}/metadata",
+    response_model=NodeDetail,
+    summary="Replace a node's key/value metadata",
+)
+async def replace_metadata(
+    node_id: uuid.UUID,
+    body: MetadataRequest,
+    request: Request,
+    user: CurrentUser,
+    uow: UnitOfWorkDep,
+    response: Response,
+    if_match: IfMatch = None,
+) -> NodeDetail:
+    """Replaces every pair; an empty list clears them."""
+    view, _ = await _service(request).replace_metadata(
+        uow,
+        user,
+        node_id,
+        [(pair.key, pair.value) for pair in body.metadata],
+        if_match=if_match,
+    )
+    await uow.commit()
+    return _with_etag(response, await _detail(request, uow, view))
+
+
 @router.post("/nodes/{node_id}/restore", response_model=NodeDetail, summary="Restore from trash")
 async def restore_node(
     node_id: uuid.UUID,
@@ -211,7 +272,7 @@ async def restore_node(
 ) -> NodeDetail:
     view = await _service(request).restore(uow, user, node_id)
     await uow.commit()
-    return _with_etag(response, NodeDetail.of_view(view))
+    return _with_etag(response, await _detail(request, uow, view))
 
 
 @router.get("/search", response_model=SearchResults, summary="Search node metadata")
@@ -219,7 +280,19 @@ async def search(
     request: Request,
     user: CurrentUser,
     uow: UnitOfWorkDep,
-    q: Annotated[str, Query(min_length=1, max_length=255)],
+    q: Annotated[str | None, Query(max_length=255)] = None,
+    tag: Annotated[list[str] | None, Query()] = None,
+    key: Annotated[str | None, Query(max_length=128)] = None,
+    value: Annotated[str | None, Query(max_length=1024)] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> SearchResults:
-    return SearchResults.of(await _service(request).search(uow, user, q, limit=limit))
+    """Name, tags, and metadata. Content is never indexed, so never matched.
+
+    Filters narrow: repeating `tag` requires all of them, and `value` pins the
+    `key` it accompanies. At least one filter is required.
+    """
+    return SearchResults.of(
+        await _service(request).search(
+            uow, user, q, tags=tag or (), key=key, value=value, limit=limit
+        )
+    )

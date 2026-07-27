@@ -10,7 +10,7 @@ adjacency-list-versus-closure-table decision swappable.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -84,9 +84,26 @@ class NodeRepository(Protocol):
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]: ...
     async def delete_permanently(self, node_id: uuid.UUID) -> None: ...
 
-    async def search_by_name(self, subject: str, term: str, *, limit: int) -> tuple[Node, ...]:
-        """Metadata-only search, scoped to what `subject` may see."""
+    async def search(
+        self,
+        subject: str,
+        *,
+        term: str | None = None,
+        tags: Sequence[str] = (),
+        key: str | None = None,
+        value: str | None = None,
+        limit: int,
+    ) -> tuple[Node, ...]:
+        """Nodes the caller may see, narrowed by every supplied filter."""
         ...
+
+    async def tags_for(self, node_id: uuid.UUID) -> frozenset[str]: ...
+
+    async def replace_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None: ...
+
+    async def metadata_for(self, node_id: uuid.UUID) -> dict[str, str]: ...
+
+    async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None: ...
 
 
 class FileVersionRepository(Protocol):

@@ -8,6 +8,7 @@ is purely structural -- create, list, rename, move, copy, trash, search.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -32,7 +33,10 @@ from cyberfs.domain.nodes import (
     NodeKind,
     NodePath,
     normalize_name,
+    normalize_tag,
+    validate_metadata,
     validate_name,
+    validate_tags,
 )
 from cyberfs.domain.permissions import resolve_effective_role
 from cyberfs.domain.ports.repositories import Page, UnitOfWork
@@ -138,14 +142,105 @@ class NodeService:
         )
 
     async def search(
-        self, uow: UnitOfWork, user: User, term: str, *, limit: int
+        self,
+        uow: UnitOfWork,
+        user: User,
+        term: str | None = None,
+        *,
+        tags: Sequence[str] = (),
+        key: str | None = None,
+        value: str | None = None,
+        limit: int,
     ) -> tuple[Node, ...]:
-        """Metadata only. Content is never indexed, so it can never be matched."""
-        if not term.strip():
-            raise ValidationError("a search term is required")
-        return await uow.nodes.search_by_name(
-            user.subject, term.strip(), limit=min(limit, self._page_size_max)
+        """Metadata only. Content is never indexed, so it can never be matched.
+
+        Every filter narrows. At least one is required: an unfiltered search
+        would be a listing of everything the caller can reach, which is what the
+        tree walk is for.
+        """
+        cleaned = (term or "").strip()
+        normalized = [normalize_tag(t) for t in tags if normalize_tag(t)]
+        if value is not None and key is None:
+            raise ValidationError("a metadata value needs the key it belongs to")
+        if not cleaned and not normalized and key is None:
+            raise ValidationError("a search needs a name, a tag, or a metadata key")
+        return await uow.nodes.search(
+            user.subject,
+            term=cleaned or None,
+            tags=normalized,
+            key=key,
+            value=value,
+            limit=min(limit, self._page_size_max),
         )
+
+    # --- labels --------------------------------------------------------
+
+    async def replace_tags(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        tags: Iterable[str],
+        *,
+        if_match: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[NodeView, frozenset[str]]:
+        """Replace a node's tags wholesale. Requires `EDITOR`, like renaming."""
+        moment = now or utcnow()
+        node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
+        _ensure_precondition(node, if_match)
+        validated = validate_tags(tags)
+
+        await uow.nodes.replace_tags(node.id, validated)
+        node.touch(moment)
+        await uow.nodes.update(node)
+        await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_TAGS_CHANGED, moment)
+        await self._invalidate(node.id, old_parent=node.parent_id)
+        return await self._view(uow, node, role), validated
+
+    async def replace_metadata(
+        self,
+        uow: UnitOfWork,
+        user: User,
+        node_id: uuid.UUID,
+        pairs: Sequence[tuple[str, str]],
+        *,
+        if_match: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[NodeView, dict[str, str]]:
+        """Replace a node's metadata wholesale. Requires `EDITOR`."""
+        moment = now or utcnow()
+        node, role = await self._authorize(uow, user, node_id, Role.EDITOR)
+        _ensure_precondition(node, if_match)
+        validated = validate_metadata(pairs)
+
+        await uow.nodes.replace_metadata(node.id, validated)
+        node.touch(moment)
+        await uow.nodes.update(node)
+        await uow.flush()
+        await self._audit(uow, user, node, AuditAction.NODE_METADATA_CHANGED, moment)
+        await self._invalidate(node.id, old_parent=node.parent_id)
+        return await self._view(uow, node, role), validated
+
+    async def labels_for(
+        self, uow: UnitOfWork, node_id: uuid.UUID
+    ) -> tuple[frozenset[str], dict[str, str]]:
+        """A node's tags and metadata, for callers already authorized to read it."""
+        return await uow.nodes.tags_for(node_id), await uow.nodes.metadata_for(node_id)
+
+    @staticmethod
+    async def current_digest(uow: UnitOfWork, node: Node) -> str | None:
+        """The plaintext digest of a node's current version, if it has one.
+
+        Only ever handed to a caller who may read the content -- they can
+        download the bytes and hash them anyway, so it tells them nothing new.
+        It stays off the administrative surface, where it would.
+        """
+        if node.current_version_id is None:
+            return None
+        version = await uow.versions.get(node.current_version_id)
+        return version.plaintext_digest if version is not None else None
 
     async def _view(self, uow: UnitOfWork, node: Node, role: Role) -> NodeView:
         chain = await uow.nodes.ancestors(node.id, max_depth=ANCESTOR_GUARD_DEPTH)

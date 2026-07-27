@@ -133,7 +133,12 @@ losing whatever was written into them; nothing else depends on them.
 
 ## Open Questions
 
-- Should a purge or a copy carry tags and metadata to the new node? Purge clearly
-  destroys them. Copy is genuinely ambiguous -- a copy of a tagged file arguably
-  inherits its labels, but a copy into someone else's tree arguably should not.
-  Resolve during implementation and pin whichever answer with a test.
+**Resolved during implementation: a copy carries no tags or metadata.** `copy`
+already carries no grants, because the copy belongs to the caller and
+`sharing/spec.md` requires it to be visible only to its new owner. A copy may
+therefore cross owners -- a viewer of someone else's file can copy it into their
+own tree -- and inheriting labels would import the source owner's assertions into
+the copier's namespace by way of a read. Dropping them matches the existing
+posture that a copy takes the content and the name and nothing else. Pinned by
+`test_a_copy_does_not_inherit_labels`. Purge destroys them via the cascade, which
+was never in question.

@@ -52,6 +52,8 @@ class AuditAction(StrEnum):
     FILE_DOWNLOADED = "file.downloaded"
     NODE_CREATED = "node.created"
     NODE_RENAMED = "node.renamed"
+    NODE_TAGS_CHANGED = "node.tags_changed"
+    NODE_METADATA_CHANGED = "node.metadata_changed"
     NODE_MOVED = "node.moved"
     NODE_COPIED = "node.copied"
     NODE_DELETED = "node.deleted"

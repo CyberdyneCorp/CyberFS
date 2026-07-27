@@ -144,6 +144,49 @@ class FileVersionRow(Base):
     )
 
 
+class NodeTagRow(Base):
+    """One label on one node.
+
+    A row per tag rather than an array or JSONB column: the limits are then a
+    plain count, and a filtered search is an ordinary join on an indexed column
+    instead of a containment operator.
+    """
+
+    __tablename__ = "node_tags"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True), ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Already normalized by the domain; stored exactly as it is matched.
+    tag: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("node_id", "tag", name="uq_node_tags_node_tag"),
+        # Searching by tag looks up the tag first, then narrows to nodes.
+        Index("ix_node_tags_tag", "tag"),
+    )
+
+
+class NodeMetadataRow(Base):
+    """One key/value pair on one node."""
+
+    __tablename__ = "node_metadata"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True), ForeignKey("nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    value: Mapped[str] = mapped_column(String(1024), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("node_id", "key", name="uq_node_metadata_node_key"),
+        # Serves both supported queries: key alone, and key with value.
+        Index("ix_node_metadata_key_value", "key", "value"),
+    )
+
+
 class GrantRow(Base):
     __tablename__ = "grants"
 

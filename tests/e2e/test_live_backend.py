@@ -9,6 +9,7 @@ without a network.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from uuid import uuid4
 
@@ -361,6 +362,50 @@ def test_purging_a_folder_destroys_its_subtree(api: httpx.Client, scratch: str) 
 
 def test_purging_an_unknown_node_is_not_found(api: httpx.Client) -> None:
     assert api.post(f"/api/v1/nodes/{uuid4()}/purge").status_code == 404
+
+
+# --- labels -----------------------------------------------------------------
+
+
+def test_a_file_is_tagged_and_found_by_tag(api: httpx.Client, folder: str) -> None:
+    body = os.urandom(4096)
+    node_id = upload(api, folder, f"tagged-{uuid4().hex[:8]}.bin", body)["id"]
+    label = f"e2e-{uuid4().hex[:8]}"
+
+    tagged = api.put(f"/api/v1/nodes/{node_id}/tags", json={"tags": [label.upper()]})
+    assert tagged.status_code == 200, tagged.text
+    assert tagged.json()["tags"] == [label], "stored normalized"
+
+    found = api.get("/api/v1/search", params={"tag": label})
+    assert found.status_code == 200, found.text
+    assert node_id in [item["id"] for item in found.json()["items"]]
+
+
+def test_metadata_is_set_and_searched(api: httpx.Client, folder: str) -> None:
+    node_id = upload(api, folder, f"annotated-{uuid4().hex[:8]}.bin", os.urandom(512))["id"]
+    value = uuid4().hex[:12]
+
+    annotated = api.put(
+        f"/api/v1/nodes/{node_id}/metadata",
+        json={"metadata": [{"key": "e2e-source", "value": value}]},
+    )
+    assert annotated.status_code == 200, annotated.text
+    assert annotated.json()["metadata"]["e2e-source"] == value
+
+    by_key = api.get("/api/v1/search", params={"key": "e2e-source", "value": value})
+    assert by_key.status_code == 200, by_key.text
+    assert [item["id"] for item in by_key.json()["items"]] == [node_id]
+
+
+def test_the_digest_matches_the_bytes_uploaded(api: httpx.Client, folder: str) -> None:
+    """Across frame boundaries and encrypted, where a broken digest would show."""
+    body = os.urandom(LARGE)
+    expected = hashlib.sha256(body).hexdigest()
+    node_id = upload(api, folder, "digested.bin", body, encrypted=True)["id"]
+
+    assert api.get(f"/api/v1/nodes/{node_id}").json()["digest"] == expected
+    versions = api.get(f"/api/v1/nodes/{node_id}/versions").json()["items"]
+    assert versions[0]["digest"] == expected
 
 
 def test_search_finds_a_file_by_name(api: httpx.Client, folder: str) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 
@@ -210,25 +210,81 @@ class SqlNodeRepository:
     async def delete_permanently(self, node_id: uuid.UUID) -> None:
         await self._session.execute(delete(m.NodeRow).where(m.NodeRow.id == node_id))
 
-    async def search_by_name(self, subject: str, term: str, *, limit: int) -> tuple[Node, ...]:
-        """Metadata-only. Content is never indexed or matched."""
+    async def search(
+        self,
+        subject: str,
+        *,
+        term: str | None = None,
+        tags: Sequence[str] = (),
+        key: str | None = None,
+        value: str | None = None,
+        limit: int,
+    ) -> tuple[Node, ...]:
+        """Metadata-only. Content is never indexed or matched.
+
+        Every supplied filter narrows: a name substring, each tag, and the
+        metadata key (optionally pinned to a value) are ANDed together. Each tag
+        is its own EXISTS rather than one `IN` with a count, so "carries all of
+        these" cannot be satisfied by carrying one of them repeatedly.
+        """
         owned = select(m.UserRow.id).where(m.UserRow.subject == subject).scalar_subquery()
         # Only active grants make a node discoverable: a pending share is
         # invisible to the recipient, search included.
         granted = select(m.GrantRow.node_id).where(
             m.GrantRow.subject == subject, m.GrantRow.pending.is_(False)
         )
-        result = await self._session.execute(
-            select(m.NodeRow)
-            .where(
-                m.NodeRow.deleted_at.is_(None),
-                m.NodeRow.normalized_name.ilike(f"%{_escape_like(term)}%"),
-                (m.NodeRow.owner_id == owned) | (m.NodeRow.id.in_(granted)),
+        conditions = [
+            m.NodeRow.deleted_at.is_(None),
+            (m.NodeRow.owner_id == owned) | (m.NodeRow.id.in_(granted)),
+        ]
+        if term:
+            conditions.append(m.NodeRow.normalized_name.ilike(f"%{_escape_like(term)}%"))
+        for tag in tags:
+            conditions.append(
+                select(m.NodeTagRow.id)
+                .where(m.NodeTagRow.node_id == m.NodeRow.id, m.NodeTagRow.tag == tag)
+                .exists()
             )
-            .order_by(m.NodeRow.normalized_name)
-            .limit(limit)
+        if key is not None:
+            pair = [m.NodeMetadataRow.node_id == m.NodeRow.id, m.NodeMetadataRow.key == key]
+            if value is not None:
+                pair.append(m.NodeMetadataRow.value == value)
+            conditions.append(select(m.NodeMetadataRow.id).where(*pair).exists())
+
+        result = await self._session.execute(
+            select(m.NodeRow).where(*conditions).order_by(m.NodeRow.normalized_name).limit(limit)
         )
         return tuple(mappers.node_from_row(r) for r in result.scalars())
+
+    # --- tags and metadata ---------------------------------------------
+
+    async def tags_for(self, node_id: uuid.UUID) -> frozenset[str]:
+        result = await self._session.execute(
+            select(m.NodeTagRow.tag).where(m.NodeTagRow.node_id == node_id)
+        )
+        return frozenset(result.scalars())
+
+    async def replace_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        await self._session.execute(delete(m.NodeTagRow).where(m.NodeTagRow.node_id == node_id))
+        for tag in sorted(tags):
+            self._session.add(m.NodeTagRow(id=uuid.uuid4(), node_id=node_id, tag=tag))
+
+    async def metadata_for(self, node_id: uuid.UUID) -> dict[str, str]:
+        result = await self._session.execute(
+            select(m.NodeMetadataRow.key, m.NodeMetadataRow.value).where(
+                m.NodeMetadataRow.node_id == node_id
+            )
+        )
+        return dict(result.all())  # type: ignore[arg-type]
+
+    async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        await self._session.execute(
+            delete(m.NodeMetadataRow).where(m.NodeMetadataRow.node_id == node_id)
+        )
+        for key in sorted(pairs):
+            self._session.add(
+                m.NodeMetadataRow(id=uuid.uuid4(), node_id=node_id, key=key, value=pairs[key])
+            )
 
 
 class SqlKeyRepository:

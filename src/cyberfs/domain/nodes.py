@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import unicodedata
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -19,6 +20,21 @@ MAX_NAME_LENGTH = 255
 #: Rejected outright: path separators, NUL, and the relative-path names.
 FORBIDDEN_NAME_CHARS = frozenset({"/", "\\", "\x00"})
 RESERVED_NAMES = frozenset({".", ".."})
+
+# --- labels ----------------------------------------------------------------
+#
+# Constants rather than settings. They bound the join fan-out a filtered search
+# does and the rows a single node can accumulate; a deployment free to raise
+# them is free to make its own search slow, and nothing yet needs them to differ.
+MAX_TAGS_PER_NODE = 64
+MAX_TAG_LENGTH = 64
+MAX_METADATA_PAIRS = 64
+MAX_METADATA_KEY_LENGTH = 128
+MAX_METADATA_VALUE_LENGTH = 1024
+#: Keys here are refused from callers, so metadata CyberFS writes about a node
+#: can never be forged by the user who owns it. Nothing writes one yet; the
+#: namespace is reserved now so claiming it later needs no migration.
+RESERVED_METADATA_PREFIX = "cyberfs."
 
 
 class NodeKind(StrEnum):
@@ -42,6 +58,68 @@ def normalize_name(name: str) -> str:
     that render identically.
     """
     return unicodedata.normalize("NFC", name)
+
+
+def normalize_tag(tag: str) -> str:
+    """Fold a tag to the form it is stored and matched in.
+
+    Case and surrounding whitespace are noise in a label whose whole purpose is
+    to match, so `Urgent`, `urgent ` and ` URGENT` are one tag. Unlike a
+    metadata value -- which an integration wrote and expects back byte for byte
+    -- nothing depends on a tag's original spelling.
+    """
+    return unicodedata.normalize("NFC", tag).strip().casefold()
+
+
+def validate_tags(tags: Iterable[str]) -> frozenset[str]:
+    """Normalize a collection of tags into the set that will be stored.
+
+    A set, so duplicates collapse and order carries no meaning. Raises rather
+    than dropping anything: silently discarding a tag the caller asked for would
+    make the response disagree with the request.
+    """
+    normalized: set[str] = set()
+    for raw in tags:
+        tag = normalize_tag(raw)
+        if not tag:
+            raise ValidationError("a tag may not be empty or whitespace only")
+        if len(tag) > MAX_TAG_LENGTH:
+            raise ValidationError(f"a tag may be at most {MAX_TAG_LENGTH} characters")
+        normalized.add(tag)
+    if len(normalized) > MAX_TAGS_PER_NODE:
+        raise ValidationError(f"a node may carry at most {MAX_TAGS_PER_NODE} tags")
+    return frozenset(normalized)
+
+
+def validate_metadata(pairs: Mapping[str, str] | Sequence[tuple[str, str]]) -> dict[str, str]:
+    """Validate key/value metadata into the mapping that will be stored.
+
+    Accepts a sequence of pairs as well as a mapping so a duplicate key is
+    visible here: a mapping has already silently dropped one of the values by
+    the time it arrives, and the caller deserves to be told rather than to
+    discover later which one survived.
+    """
+    items = list(pairs.items()) if isinstance(pairs, Mapping) else list(pairs)
+    result: dict[str, str] = {}
+    for key, value in items:
+        if not key:
+            raise ValidationError("a metadata key may not be empty")
+        if len(key) > MAX_METADATA_KEY_LENGTH:
+            raise ValidationError(
+                f"a metadata key may be at most {MAX_METADATA_KEY_LENGTH} characters"
+            )
+        if key.casefold().startswith(RESERVED_METADATA_PREFIX):
+            raise ValidationError(f"{RESERVED_METADATA_PREFIX!r} keys are reserved for CyberFS")
+        if len(value) > MAX_METADATA_VALUE_LENGTH:
+            raise ValidationError(
+                f"a metadata value may be at most {MAX_METADATA_VALUE_LENGTH} characters"
+            )
+        if key in result:
+            raise ValidationError(f"metadata key {key!r} appears more than once")
+        result[key] = value
+    if len(result) > MAX_METADATA_PAIRS:
+        raise ValidationError(f"a node may carry at most {MAX_METADATA_PAIRS} metadata pairs")
+    return result
 
 
 def validate_name(name: str) -> str:

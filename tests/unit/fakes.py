@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from types import TracebackType
 
@@ -55,6 +55,10 @@ class FakeUserRepository:
 class FakeNodeRepository:
     def __init__(self) -> None:
         self.by_id: dict[uuid.UUID, Node] = {}
+        # The real schema cascades these away with the node row; the fake has no
+        # foreign keys, so `delete_permanently` clears them explicitly.
+        self.tags: dict[uuid.UUID, frozenset[str]] = {}
+        self.metadata: dict[uuid.UUID, dict[str, str]] = {}
 
     async def get(self, node_id: uuid.UUID) -> Node | None:
         return self.by_id.get(node_id)
@@ -145,12 +149,45 @@ class FakeNodeRepository:
 
     async def delete_permanently(self, node_id: uuid.UUID) -> None:
         self.by_id.pop(node_id, None)
+        self.tags.pop(node_id, None)
+        self.metadata.pop(node_id, None)
 
-    async def search_by_name(self, subject: str, term: str, *, limit: int) -> tuple[Node, ...]:
-        matches = [
-            n for n in self.by_id.values() if term.lower() in n.name.lower() and not n.is_deleted
-        ]
+    async def search(
+        self,
+        subject: str,
+        *,
+        term: str | None = None,
+        tags: Sequence[str] = (),
+        key: str | None = None,
+        value: str | None = None,
+        limit: int,
+    ) -> tuple[Node, ...]:
+        matches = []
+        for node in self.by_id.values():
+            if node.is_deleted:
+                continue
+            if term and term.lower() not in node.name.lower():
+                continue
+            if tags and not set(tags) <= self.tags.get(node.id, frozenset()):
+                continue
+            if key is not None:
+                pairs = self.metadata.get(node.id, {})
+                if key not in pairs or (value is not None and pairs[key] != value):
+                    continue
+            matches.append(node)
         return tuple(matches[:limit])
+
+    async def tags_for(self, node_id: uuid.UUID) -> frozenset[str]:
+        return self.tags.get(node_id, frozenset())
+
+    async def replace_tags(self, node_id: uuid.UUID, tags: frozenset[str]) -> None:
+        self.tags[node_id] = frozenset(tags)
+
+    async def metadata_for(self, node_id: uuid.UUID) -> dict[str, str]:
+        return dict(self.metadata.get(node_id, {}))
+
+    async def replace_metadata(self, node_id: uuid.UUID, pairs: Mapping[str, str]) -> None:
+        self.metadata[node_id] = dict(pairs)
 
 
 class FakeKeyRepository:
