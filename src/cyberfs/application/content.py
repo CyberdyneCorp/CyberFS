@@ -338,9 +338,13 @@ class ContentService:
         owner = await uow.users.get(node.owner_id)
         if owner is None:
             raise KeyUnavailableError("the node has no owner record")
-        # A fresh DEK per version: a key is never reused across versions, so a
-        # frame from one can never be replayed into another.
-        dek = await self._encryption.create_data_key(uow, node, owner.subject, now)
+        # The node's DEK, minted on the first version and reused after: the
+        # schema stores one wrapped key per (node, subject), so minting a second
+        # one here collided on the unique constraint and made every content
+        # replacement on an encrypted file fail with a 409. Replay across
+        # versions is prevented by `seal` binding each frame to `version_id`,
+        # not by handing each version its own key.
+        dek = await self._encryption.ensure_data_key(uow, node, owner.subject, now)
         return await self._encryption.seal(plaintext, dek, version_id)
 
     async def _check_admission(

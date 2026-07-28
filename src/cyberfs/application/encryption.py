@@ -111,6 +111,31 @@ class EncryptionService:
         )
         return dek
 
+    async def ensure_data_key(
+        self, uow: UnitOfWork, node: Node, subject: str, now: datetime
+    ) -> bytes:
+        """The node's DEK: minted on first use, reused by every later version.
+
+        `wrapped_data_keys` is unique on `(node_id, subject)` and carries no
+        version column, so a second version cannot bring a key of its own -- the
+        insert collides on `uq_wrapped_data_keys_node_subject` and the whole write
+        fails with a `409`. That is what made replacing the content of an
+        encrypted file impossible from the day encryption landed.
+
+        Reuse is also the only option that keeps history readable: a replacement
+        key would leave every earlier version's bytes sealed under a DEK nothing
+        stores any more.
+
+        Versions stay cryptographically separated regardless, because `seal`
+        mixes the version id into the AEAD -- a frame lifted out of one version
+        cannot be replayed into another even though both are sealed under this
+        one key.
+        """
+        wrapped = await uow.keys.get_data_key(node.id, subject)
+        if wrapped is None:
+            return await self.create_data_key(uow, node, subject, now)
+        return self._keys.unwrap_dek(wrapped.wrapped_dek, await self._user_key(uow, node.owner_id))
+
     async def data_key_for(self, uow: UnitOfWork, node: Node, subject: str) -> bytes:
         """The DEK as `subject` can obtain it.
 

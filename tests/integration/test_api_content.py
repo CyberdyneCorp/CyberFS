@@ -344,6 +344,53 @@ def test_an_encrypted_upload_round_trips(client: TestClient) -> None:
     assert fetched.headers["Content-Length"] == str(len(PAYLOAD))
 
 
+def test_an_encrypted_file_accepts_a_second_version_and_both_stay_readable(
+    client: TestClient,
+) -> None:
+    """Replacing an encrypted file's content, which never worked until now.
+
+    `_seal_if_needed` minted a fresh DEK on every write, but `wrapped_data_keys`
+    is unique on `(node_id, subject)` and has no version column -- so the second
+    write collided on `uq_wrapped_data_keys_node_subject`, which the unit of work
+    translates into a bare `ConflictError`, and the request answered `409`.
+    Nothing caught it: every existing test either uploads an encrypted file once
+    or toggles encryption on a plaintext one, and both mint their key for the
+    first time.
+
+    The second assertion is the one that matters for data safety. Reusing the
+    node's DEK is only correct if it keeps *history* readable, so the previous
+    version is read back through the version endpoint and compared byte for byte.
+    """
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/rewritten.bin?encrypted=true",
+        content=PAYLOAD,
+        headers=ALICE,
+    )
+    assert created.status_code == HTTPStatus.CREATED, created.text
+    node = created.json()["id"]
+
+    second = PAYLOAD + b"-the-sequel"
+    replaced = client.put(f"/api/v1/nodes/{node}/content", content=second, headers=ALICE)
+    assert replaced.status_code == HTTPStatus.OK, replaced.text
+
+    assert client.get(f"/api/v1/nodes/{node}/content", headers=ALICE).content == second
+
+    versions = client.get(f"/api/v1/nodes/{node}/versions", headers=ALICE).json()["items"]
+    assert len(versions) == 2, versions
+    assert {v["sequence"] for v in versions} == {1, 2}
+    assert all(v["encrypted"] for v in versions), versions
+
+    # The older version must still decrypt: a replacement DEK would have left
+    # these bytes sealed under a key nothing stores any more.
+    first_version = next(v for v in versions if v["sequence"] == 1)
+    restored = client.post(
+        f"/api/v1/nodes/{node}/versions/{first_version['id']}/restore", headers=ALICE
+    )
+    assert restored.status_code == HTTPStatus.OK, restored.text
+    assert client.get(f"/api/v1/nodes/{node}/content", headers=ALICE).content == PAYLOAD
+
+
 def test_the_object_in_minio_holds_no_plaintext(client: TestClient) -> None:
     """`content-encryption/spec.md`: reading the object directly yields nothing.
 
