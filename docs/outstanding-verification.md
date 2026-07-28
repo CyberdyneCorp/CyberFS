@@ -14,18 +14,35 @@ list short: an entry either gets done and deleted, or becomes a change of its ow
 
 **Spec:** `backup-restore` — "Restore procedure", "Restore is tested automatically".
 
-Done: backups are enabled against a separate MinIO instance over TLS, and a
-seeded run produced a `verified` artifact — dump, manifest, and 87 mirrored
-objects off-site, `skew_missing_in_manifest` 0, `MASTER_KEY` confirmed absent
-from both the real manifest and the real dump, plain and encrypted seed files
-reading back byte-identical.
+**The artifact is now verified; the restore still is not.** Pulled the 2026-07-28
+03:00 UTC production backup straight out of `cyberfs-backups` and checked it:
 
-Not done: **restoring from it.** The automated round trip in
-`tests/integration/test_backup_restore_roundtrip.py` runs in CI, so the code path
-is exercised — but with CI-made artifacts, on CI's Postgres, under CI's key. It
-does not prove that *this* dump, from *this* server, with *this* `MASTER_KEY`,
-restores. Restoring is destructive, so it needs a scratch stack; see
-[`restore-runbook.md`](restore-runbook.md).
+- `dump.sql.gz` + `manifest.json` + **85 mirrored objects**, matching the
+  manifest's `object_count` and its 85 `entries` exactly.
+- `dump_checksum` in the manifest equals the SHA-256 of the bytes actually stored
+  (`a285b8e3…`), so the artifact is intact and not truncated.
+- First five bytes are `PGDMP`, so it is a real `pg_dump --format=custom` archive
+  rather than an empty or partial file.
+- `MASTER_KEY` appears in **neither** the dump nor the manifest, which is the
+  security property `backup-restore` requires.
+- `schema_revision` is `b7e3c9a1d2f5` — one revision behind current head, so a
+  restore of this artifact needs migrations run afterwards.
+
+So the backup is fetchable, complete, internally consistent, and key-free.
+
+**What remains is loading it into a Postgres and reading content back**, which is
+the only thing that proves a restore. It needs a scratch stack: the production
+database host is an internal Compose name and is not reachable from a workstation,
+and restoring anywhere real is destructive. Blocked on a local Docker daemon —
+Docker Desktop's backend runs but its Linux VM never boots, so `docker info` fails
+and no scratch Postgres can be started.
+
+When Docker is available:
+
+```sh
+just up                       # scratch Postgres, Redis, MinIO
+just restore <backup_id>      # non-destructive against an empty stack
+```
 
 Was `bootstrap-cyberfs` task 12.8.
 
