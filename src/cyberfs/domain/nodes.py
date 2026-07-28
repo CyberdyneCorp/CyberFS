@@ -159,6 +159,15 @@ class FileVersion:
     encrypted: bool
     created_at: datetime
     created_by: str
+    #: The version identifier the bytes were sealed under, bound into the AEAD as
+    #: associated data. Equal to `id` for content sealed in place, and equal to
+    #: the *source's* sealing id when a version's bytes were copied from another
+    #: -- a copy shares its source's ciphertext, so it must share what opens it.
+    #:
+    #: Deliberately without a default: a default would let a future copy path
+    #: forget to carry it and seal the bug back in, silently, on the one field
+    #: whose whole purpose is to stop that.
+    seal_version_id: uuid.UUID
 
     @property
     def object_key(self) -> str:

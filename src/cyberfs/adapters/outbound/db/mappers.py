@@ -183,6 +183,7 @@ def version_to_row(version: FileVersion) -> m.FileVersionRow:
         encrypted=version.encrypted,
         created_at=version.created_at,
         created_by=version.created_by,
+        seal_version_id=version.seal_version_id,
     )
 
 
@@ -198,6 +199,7 @@ def version_from_row(row: m.FileVersionRow) -> FileVersion:
         encrypted=row.encrypted,
         created_at=row.created_at,
         created_by=row.created_by,
+        seal_version_id=row.seal_version_id,
     )
 
 

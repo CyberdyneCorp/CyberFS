@@ -86,72 +86,30 @@ running or it is not removing failed artifacts, and the difference matters: the
 first is a scheduling problem, the second is a bug in the sweep. Establish which
 before assuming this closes itself by waiting.
 
-## 7. Sharing by email is broken in production
+## 7. A directory authorization failure is reported as an outage
 
 **Spec:** `sharing` — recipient resolution.
 
-`PUT /api/v1/nodes/{id}/grants` with an email recipient answers `503 "the user
-directory is unavailable"` for *every* address, including ones that certainly
-exist. Sharing by subject UUID works, so only the email path is affected.
+**The production symptom is fixed.** `PUT /api/v1/nodes/{id}/grants` with an email
+recipient answered `503 "the user directory is unavailable"` for *every* address,
+because CyberFS's OAuth client (`cyb_IISsKa9xrdPaFzIJ`) was registered in
+CyberdyneAuth with `scope: ""` and `GET /orgs/{id}/members` refused it with
+`403 Insufficient scope: directory:read required`. Granting that one scope fixed
+it with no deploy; `tests/e2e/test_live_sharing.py` covers it and passes.
 
-The cause is proved and is configuration, not code: CyberFS's OAuth client
-(`cyb_IISsKa9xrdPaFzIJ`) is registered in CyberdyneAuth with `scope: ""`, so
-`GET /orgs/{id}/members` refuses it with
-`403 Insufficient scope: directory:read required`. Granting that one scope to the
-client fixes it; nothing needs deploying.
+**What remains is the misreport.** `adapters/outbound/auth/directory.py` maps any
+`httpx.HTTPError` from that call to `DependencyUnavailableError`, so an
+authorization failure presents as a transient outage. A `403` there means "CyberFS
+is not allowed to ask", which is permanent and actionable, while `503` invites a
+retry that can never succeed — and it cost real time diagnosing exactly this.
+Worth separating the two before the next misconfiguration hides behind the same
+message.
 
-Two things follow that *are* code:
+Note also that no in-process test can cover the distinction: the integration suite
+stubs the directory, and a stub cannot be missing a scope. It belongs to the e2e
+tier or nowhere.
 
-- `adapters/outbound/auth/directory.py` maps any `httpx.HTTPError` from that call
-  to `DependencyUnavailableError`, so an authorization failure is reported as an
-  outage. A `403` from the directory means "CyberFS is not allowed to ask", which
-  is permanent and actionable; `503` invites a retry that can never succeed.
-- No test could have caught it. The integration suite stubs the directory, and a
-  stub cannot be missing a scope. `tests/e2e/test_live_sharing.py` now asserts the
-  working behaviour and fails until the scope is granted.
-
-## 8. Copying or restoring a version of an encrypted file yields an empty body
-
-**Spec:** `content-encryption` — framing; `file-storage` — versions, copy.
-
-**This one loses data from the user's point of view and needs a decision.**
-
-`EncryptionService.seal` binds every frame to the version id
-(`cipher.seal(plaintext, dek, version_id.bytes)`), and `open` authenticates with
-`version.id` from the row it is serving. Two paths copy *sealed bytes* into a row
-that carries a **different** id:
-
-- `ContentService.restore_version` — copies the source object to a new key and
-  writes a new `FileVersion` with a fresh id.
-- `ContentService._copy_content` (behind `POST /nodes/{id}/copy`) — the same
-  shape, for a new node.
-
-In both, `open` then authenticates against an id the bytes were never sealed
-under, decryption produces nothing, and the endpoint returns `200` with an empty
-body. Restore additionally repoints `current_version_id`, so a user who rolls
-back an encrypted file watches it silently empty itself while every byte is still
-in the object store, unreadable.
-
-Pre-existing, from the same commit as the encryption feature. It survived because
-no test copied or restored a version of an *encrypted* file — the existing copy
-and restore tests use plaintext, and the encryption tests never copy.
-
-Pinned by `tests/integration/test_api_content.py::
-test_restoring_a_version_of_an_encrypted_file_returns_its_bytes`, marked
-`xfail(strict=True)` so that fixing the bug fails the run until the marker is
-removed.
-
-Two candidate fixes, and they differ in cost rather than correctness:
-
-1. **Re-seal on copy** — open the source stream with the source id and seal it
-   again under the new one. Self-contained, no migration, but it decrypts and
-   re-encrypts the whole object on every copy and version restore.
-2. **Record the sealing id on the version row** — add a column that defaults to
-   the row's own id, set it to the source's when copying, and have `open` use it.
-   One migration, no re-encryption, and it makes the AAD explicit rather than
-   implied by a column that happens to share a name.
-
-## 9. `MKCOL` on an existing collection answers the wrong status
+## 8. `MKCOL` on an existing collection answers the wrong status
 
 **Spec:** `webdav-compatibility`.
 

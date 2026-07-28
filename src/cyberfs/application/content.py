@@ -308,6 +308,8 @@ class ContentService:
             encrypted=node.encrypted,
             created_at=now,
             created_by=user.subject,
+            # Sealed here and now, so the bytes are bound to this row's own id.
+            seal_version_id=version_id,
         )
         await uow.versions.add(version)
 
@@ -539,12 +541,12 @@ class ContentService:
 
         if wanted is None:
             stream = self._objects.get(version.object_key)
-            return self._encryption.open(stream, dek, version.id)
+            return self._encryption.open(stream, dek, version.seal_version_id)
 
         span = self._encryption.plan_range(wanted.start, wanted.length, version.size_bytes)
         offset, length = span.ciphertext_range(self._encryption.frame_bytes)
         stream = self._objects.get(version.object_key, offset=offset, length=length)
-        return self._encryption.open(stream, dek, version.id, span=span)
+        return self._encryption.open(stream, dek, version.seal_version_id, span=span)
 
     async def list_versions(
         self, uow: UnitOfWork, user: User, node_id: uuid.UUID
@@ -584,6 +586,12 @@ class ContentService:
             encrypted=source.encrypted,
             created_at=moment,
             created_by=user.subject,
+            # The source's *sealing* id, not the source's own id. These are the
+            # source's bytes, copied rather than re-sealed, so what opens them is
+            # whatever opened the source -- and taking `source.seal_version_id`
+            # rather than `source.id` is what makes a copy of a copy work, with
+            # no chain to walk at read time.
+            seal_version_id=source.seal_version_id,
         )
         await uow.versions.add(version)
         node.current_version_id = version.id
@@ -623,8 +631,21 @@ class ContentService:
                 encrypted=original.encrypted,
                 created_at=now,
                 created_by=target.owner_id.hex,
+                # Copied bytes keep the sealing id that opens them, as in
+                # `restore_version`.
+                seal_version_id=original.seal_version_id,
             )
         )
+        if original.encrypted and self._encryption is not None:
+            # The ciphertext was copied, not re-sealed, so the copy needs the
+            # source's DEK wrapped against its own node id -- that is what
+            # `data_key_for` looks up when the copy is read. Without it the copy
+            # has bytes, a version row, and no way to open either.
+            owner = await uow.users.get(target.owner_id)
+            if owner is None:
+                raise KeyUnavailableError("the copy has no owner record")
+            await self._encryption.copy_data_key(uow, source, target, owner.subject, now)
+
         target.current_version_id = version_id
         target.content_type = original.content_type
         await uow.flush()

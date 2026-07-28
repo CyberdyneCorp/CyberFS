@@ -393,6 +393,53 @@ async def test_restoring_a_version_adds_a_new_one(world: World) -> None:
     assert len(await uow.versions.list_for_node(node.id)) == 3
 
 
+async def test_a_restored_version_carries_the_sealing_id_that_opens_its_bytes(
+    world: World,
+) -> None:
+    """A restore copies ciphertext, so it must copy what authenticates it.
+
+    `seal` binds the version id into the AEAD; a restore writes a new row for the
+    *source's* bytes, so taking the new row's own id as the associated data
+    authenticated against an id those bytes were never sealed under, and the
+    download decrypted to nothing. Chosen in the application layer, so the fake
+    is enough to pin it.
+    """
+    uow, user, _, svc = world
+    node = await svc.upload(uow, user, user.root_folder_id, "a.txt", stream(b"first"), now=NOW)
+    original_id = node.current_version_id
+    await svc.replace(uow, user, node.id, stream(b"second"), now=LATER)
+
+    restored = await svc.restore_version(uow, user, node.id, original_id, now=LATER)  # type: ignore[arg-type]
+
+    versions = {v.id: v for v in await uow.versions.list_for_node(node.id)}
+    source = versions[original_id]  # type: ignore[index]
+    new = versions[restored.current_version_id]  # type: ignore[index]
+    assert new.id != source.id, "a restore adds a version rather than reusing one"
+    assert new.seal_version_id == source.seal_version_id
+
+
+async def test_restoring_a_restored_version_keeps_the_original_sealing_id(
+    world: World,
+) -> None:
+    """The transitive case: a copy of a copy still opens.
+
+    This is why the source's `seal_version_id` is carried rather than its `id` --
+    the latter would bind the second copy to a row whose bytes it does not hold,
+    and no chain-walk at read time would be needed to notice.
+    """
+    uow, user, _, svc = world
+    node = await svc.upload(uow, user, user.root_folder_id, "a.txt", stream(b"first"), now=NOW)
+    first_id = node.current_version_id
+    await svc.replace(uow, user, node.id, stream(b"second"), now=LATER)
+    once = await svc.restore_version(uow, user, node.id, first_id, now=LATER)  # type: ignore[arg-type]
+
+    twice = await svc.restore_version(uow, user, node.id, once.current_version_id, now=LATER)  # type: ignore[arg-type]
+
+    versions = {v.id: v for v in await uow.versions.list_for_node(node.id)}
+    original = versions[first_id]  # type: ignore[index]
+    assert versions[twice.current_version_id].seal_version_id == original.seal_version_id  # type: ignore[index]
+
+
 async def test_a_restored_version_has_the_old_content(world: World) -> None:
     uow, user, _, svc = world
     node = await svc.upload(uow, user, user.root_folder_id, "a.txt", stream(b"first"), now=NOW)

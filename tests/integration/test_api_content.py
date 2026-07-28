@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from collections.abc import Iterator
@@ -382,28 +383,13 @@ def test_an_encrypted_file_accepts_a_second_version_and_both_stay_readable(
     assert all(v["encrypted"] for v in versions), versions
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "restoring a version of an ENCRYPTED file yields an empty body. `seal` binds "
-        "frames to the version id as AAD, but `restore_version` copies the source "
-        "ciphertext into a row with a NEW id, so `open` authenticates against the wrong "
-        "id and decrypts nothing. `copy_content` has the same flaw. Pre-existing, and "
-        "tracked in docs/outstanding-verification.md; the fix needs a decision between "
-        "re-sealing on copy and recording the sealing id on the version row."
-    ),
-)
 def test_restoring_a_version_of_an_encrypted_file_returns_its_bytes(client: TestClient) -> None:
-    """Currently broken, and worse than a refusal.
+    """The regression test for the copy-sealing defect, over real MinIO.
 
-    The restore answers `200` and repoints `current_version_id`, so the node then
-    serves an empty body while every byte is still sitting in the object store
-    sealed under an id nothing reads it with. A user would see their file silently
-    empty itself.
-
-    `strict=True` on purpose: when the underlying bug is fixed this test starts
-    passing and pytest fails the run, which is what forces the xfail to be
-    removed rather than left lying around.
+    `seal` binds the version id into the AEAD, and a restore writes a new row for
+    the source's bytes. Authenticating against the new row's own id failed the
+    tag, so the download returned an empty body while the restore had already
+    repointed `current_version_id` -- a rollback that silently emptied the file.
     """
     root = root_id(client, ALICE)
     created = client.put(
@@ -411,6 +397,7 @@ def test_restoring_a_version_of_an_encrypted_file_returns_its_bytes(client: Test
         content=PAYLOAD,
         headers=ALICE,
     )
+    assert created.status_code == HTTPStatus.CREATED, created.text
     node = created.json()["id"]
     client.put(f"/api/v1/nodes/{node}/content", content=PAYLOAD + b"-v2", headers=ALICE)
 
@@ -420,6 +407,64 @@ def test_restoring_a_version_of_an_encrypted_file_returns_its_bytes(client: Test
     assert restored.status_code == HTTPStatus.OK, restored.text
 
     assert client.get(f"/api/v1/nodes/{node}/content", headers=ALICE).content == PAYLOAD
+    # The digest describes plaintext, so restoring the same content restores the
+    # same digest -- a re-seal under a new key would keep this true, which is why
+    # the byte comparison above is the load-bearing assertion.
+    assert client.get(f"/api/v1/nodes/{node}", headers=ALICE).json()["digest"] == (
+        hashlib.sha256(PAYLOAD).hexdigest()
+    )
+
+
+def test_copying_an_encrypted_file_leaves_the_copy_readable(client: TestClient) -> None:
+    """`POST /nodes/{id}/copy` on an encrypted file was doubly broken.
+
+    The copy carried neither the sealing id that authenticates its bytes nor a
+    wrapped key against its own node id, so it had ciphertext, a version row, and
+    no way to open either.
+    """
+    root = root_id(client, ALICE)
+    folder = client.post(
+        f"/api/v1/nodes/{root}/folders", json={"name": "copies"}, headers=ALICE
+    ).json()["id"]
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/original.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    )
+    node = created.json()["id"]
+
+    copied = client.post(
+        f"/api/v1/nodes/{node}/copy", json={"parent_id": folder}, headers=ALICE
+    )
+    assert copied.status_code == HTTPStatus.CREATED, copied.text
+    copy_id = copied.json()["id"]
+
+    assert client.get(f"/api/v1/nodes/{copy_id}/content", headers=ALICE).content == PAYLOAD
+    assert client.get(f"/api/v1/nodes/{copy_id}", headers=ALICE).json()["encrypted"] is True
+
+
+def test_a_version_of_a_copied_encrypted_file_still_restores(client: TestClient) -> None:
+    """The transitive case: a copy of a copy, which no plaintext test reaches.
+
+    The copy carries its source's *sealing* id rather than the source's own id,
+    so this works with no chain to walk at read time.
+    """
+    root = root_id(client, ALICE)
+    folder = client.post(
+        f"/api/v1/nodes/{root}/folders", json={"name": "chain"}, headers=ALICE
+    ).json()["id"]
+    node = client.put(
+        f"/api/v1/nodes/{root}/files/chained.bin?encrypted=true", content=PAYLOAD, headers=ALICE
+    ).json()["id"]
+    copy_id = client.post(
+        f"/api/v1/nodes/{node}/copy", json={"parent_id": folder}, headers=ALICE
+    ).json()["id"]
+
+    client.put(f"/api/v1/nodes/{copy_id}/content", content=PAYLOAD + b"-v2", headers=ALICE)
+    versions = client.get(f"/api/v1/nodes/{copy_id}/versions", headers=ALICE).json()["items"]
+    first = next(v for v in versions if v["sequence"] == 1)
+    restored = client.post(f"/api/v1/nodes/{copy_id}/versions/{first['id']}/restore", headers=ALICE)
+    assert restored.status_code == HTTPStatus.OK, restored.text
+
+    assert client.get(f"/api/v1/nodes/{copy_id}/content", headers=ALICE).content == PAYLOAD
 
 
 def test_the_object_in_minio_holds_no_plaintext(client: TestClient) -> None:

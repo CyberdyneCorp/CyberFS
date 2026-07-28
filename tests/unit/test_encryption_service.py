@@ -589,3 +589,69 @@ async def test_a_wrong_master_key_fails_verification() -> None:
 
 async def test_an_empty_deployment_verifies_trivially() -> None:
     assert await encryption().verify_master_key(FakeUnitOfWork())
+
+
+# --- copied ciphertext keeps the id that opens it ---------------------------
+
+
+async def test_restoring_a_version_of_an_encrypted_file_decrypts(world: World) -> None:
+    """The regression test for the copy-sealing defect, with real AES-GCM.
+
+    `seal` binds the version id into the AEAD, and a restore writes a new row for
+    the *source's* bytes. Authenticating against the new row's own id -- which is
+    what the code did -- fails the tag and the download decrypts to nothing, so
+    rolling back an encrypted file silently emptied it. The fake object store and
+    real cipher are enough to show it: the failure is in the associated data, not
+    in the storage.
+    """
+    uow, user, _, content, _ = world
+    node = await content.upload(
+        uow, user, user.root_folder_id, "secret.txt", stream(PAYLOAD), encrypted=True, now=NOW
+    )
+    first = node.current_version_id
+    await content.replace(uow, user, node.id, stream(PAYLOAD + b"-v2"), now=LATER)
+
+    await content.restore_version(uow, user, node.id, first, now=LATER)  # type: ignore[arg-type]
+
+    plan = await content.download(uow, user, node.id)
+    assert await collect(plan.stream) == PAYLOAD
+
+
+async def test_a_copy_of_an_encrypted_file_decrypts(world: World) -> None:
+    """The same defect on the other path, behind `POST /nodes/{id}/copy`."""
+    uow, user, _, content, _ = world
+    source = await content.upload(
+        uow, user, user.root_folder_id, "secret.txt", stream(PAYLOAD), encrypted=True, now=NOW
+    )
+
+    view = await nodes().copy(
+        uow, user, source.id, user.root_folder_id, name="copy.txt", content=content, now=LATER
+    )
+
+    plan = await content.download(uow, user, view.node.id)
+    assert await collect(plan.stream) == PAYLOAD
+
+
+async def test_a_copy_is_byte_identical_in_the_store_so_nothing_was_re_encrypted(
+    world: World,
+) -> None:
+    """The point of recording the sealing id rather than re-sealing on copy.
+
+    Re-encryption under a fresh nonce could not produce identical ciphertext, so
+    equality here is proof that the copy stayed a metadata operation instead of
+    becoming an O(size) crypto one.
+    """
+    uow, user, store, content, _ = world
+    source = await content.upload(
+        uow, user, user.root_folder_id, "secret.txt", stream(PAYLOAD), encrypted=True, now=NOW
+    )
+
+    view = await nodes().copy(
+        uow, user, source.id, user.root_folder_id, name="copy.txt", content=content, now=LATER
+    )
+
+    source_version = await uow.versions.get(source.current_version_id)  # type: ignore[arg-type]
+    copied_version = await uow.versions.get(view.node.current_version_id)  # type: ignore[arg-type]
+    assert source_version is not None and copied_version is not None
+    assert store.objects[copied_version.object_key] == store.objects[source_version.object_key]
+    assert copied_version.seal_version_id == source_version.seal_version_id

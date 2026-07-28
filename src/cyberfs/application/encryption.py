@@ -136,6 +136,33 @@ class EncryptionService:
             return await self.create_data_key(uow, node, subject, now)
         return self._keys.unwrap_dek(wrapped.wrapped_dek, await self._user_key(uow, node.owner_id))
 
+    async def copy_data_key(
+        self, uow: UnitOfWork, source: Node, target: Node, subject: str, now: datetime
+    ) -> None:
+        """Give a copied node its own wrapped copy of the source's DEK.
+
+        A copy shares its source's ciphertext byte for byte, so it needs the same
+        DEK -- wrapped under the copy owner's KEK and stored against the *copy's*
+        node id, because that is what `data_key_for` looks up when the copy is
+        read. Without this row the copy has bytes and a version and no way to
+        open either, which is what `POST /nodes/{id}/copy` produced for every
+        encrypted file.
+
+        Unwrapped through `subject`'s own access to the source, so a caller who
+        could not read the source cannot obtain its key here either.
+        """
+        dek = await self.data_key_for(uow, source, subject)
+        kek = await self._user_key(uow, target.owner_id)
+        await uow.keys.add_data_key(
+            WrappedDataKey(
+                id=uuid.uuid4(),
+                node_id=target.id,
+                subject=subject,
+                wrapped_dek=self._keys.wrap_dek(dek, kek),
+                created_at=now,
+            )
+        )
+
     async def data_key_for(self, uow: UnitOfWork, node: Node, subject: str) -> bytes:
         """The DEK as `subject` can obtain it.
 

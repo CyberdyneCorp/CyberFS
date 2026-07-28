@@ -222,8 +222,9 @@ def test_restore_clears_the_deletion() -> None:
 
 
 def version(**kw: object) -> FileVersion:
+    identifier = kw.get("id") or uuid.uuid4()
     base: dict[str, object] = {
-        "id": uuid.uuid4(),
+        "id": identifier,
         "node_id": uuid.uuid4(),
         "owner_id": OWNER,
         "sequence": 1,
@@ -233,8 +234,36 @@ def version(**kw: object) -> FileVersion:
         "encrypted": False,
         "created_at": NOW,
         "created_by": "user-1",
+        # Sealed in place unless a test says otherwise, which is the common case.
+        "seal_version_id": identifier,
     }
     return FileVersion(**{**base, **kw})  # type: ignore[arg-type]
+
+
+def test_content_sealed_in_place_is_opened_with_its_own_identifier() -> None:
+    """The ordinary case, where the sealing id and the row id coincide.
+
+    Worth pinning because their coinciding is exactly what hid the copy bug: for
+    every version written in place the two are the same value, so a reader that
+    used the wrong one looked correct.
+    """
+    v = version()
+    assert v.seal_version_id == v.id
+
+
+def test_a_copied_version_keeps_the_identifier_that_opens_its_bytes() -> None:
+    """A copy shares its source's ciphertext, so it must share the AAD.
+
+    The row still has an identity of its own -- `object_key` is derived from `id`,
+    so the copy occupies its own object -- while what *opens* those bytes comes
+    from the source.
+    """
+    source = version()
+    copied = version(seal_version_id=source.seal_version_id)
+
+    assert copied.seal_version_id == source.seal_version_id
+    assert copied.id != source.id
+    assert copied.object_key != source.object_key
 
 
 def test_object_key_is_built_from_identifiers() -> None:

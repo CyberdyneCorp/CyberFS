@@ -148,6 +148,18 @@ class FileVersionRow(Base):
     encrypted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(TimestampTz, nullable=False)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: The version id these bytes were sealed under, bound into the AEAD. Usually
+    #: this row's own `id`; a copied version carries its source's instead.
+    #:
+    #: No foreign key, deliberately. It routinely points at a version of another
+    #: node, and it has to keep pointing there after that version is pruned by
+    #: `VERSION_RETENTION_COUNT` -- the copy stays readable whether or not the row
+    #: it was sealed under still exists. `ON DELETE CASCADE` would destroy a
+    #: healthy copy and `RESTRICT` would block a legitimate prune, so this is a
+    #: bare identifier and means to be.
+    seal_version_id: Mapped[uuid.UUID] = mapped_column(
+        postgresql.UUID(as_uuid=True), nullable=False
+    )
 
     __table_args__ = (
         UniqueConstraint("node_id", "sequence", name="uq_file_versions_node_sequence"),
