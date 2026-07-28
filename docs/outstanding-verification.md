@@ -69,13 +69,26 @@ encrypted content permanently, and no restore can recover it.
 It needs to be held somewhere else, under its own custody, before the backups
 above mean anything.
 
-## 4. Migration rollback
+## 4. Migration rollback — **closed**
 
 **Spec:** none directly; every change's `design.md` claims a rollback path.
 
-`alembic upgrade head` runs in CI and on every deploy. `downgrade` is written for
-all seven migrations and **exercised for none of them**. The rollback plan in each
-design document is therefore unproven.
+Proved in CI on 2026-07-28. `tests/integration/test_migrations.py` now walks the
+whole chain down to base and back up on a database of its own, checks that a
+single step back and forward actually removes and restores the newest column
+rather than passing on a no-op `downgrade`, and verifies the sealing-id backfill
+against a row seeded at the previous revision.
+
+Driven through `command.upgrade(alembic_config(), ...)` with `DATABASE_URL`
+pointed at the scratch database — the same call the container entrypoint makes —
+so the rollback is exercised on the path the deployment actually uses rather than
+through a synchronous driver the project does not install.
+
+The rollback plans in each design document are therefore no longer claims. Note
+what this does and does not cover: it proves the schema round-trips, not that any
+particular deployment's *data* survives a downgrade. `c8f4a2e6d1b7`'s downgrade
+drops a column, and its docstring says plainly that doing so returns the database
+to a state where copies of encrypted content are unreadable.
 
 ## 5. Browser sign-in
 
@@ -126,15 +139,15 @@ Note also that no in-process test can cover the distinction: the integration sui
 stubs the directory, and a stub cannot be missing a scope. It belongs to the e2e
 tier or nowhere.
 
-## 8. `MKCOL` on an existing collection answers the wrong status
+## 8. `MKCOL` on an existing collection answers the wrong status — **closed**
 
 **Spec:** `webdav-compatibility`.
 
-Fixed in `adapters/inbound/api/routers/webdav.py` but **not yet deployed**: every
-taken-name refusal on the WebDAV surface returned `412`, where RFC 4918 §9.3.1
-names `405` for a `MKCOL` on an already-mapped URL. `412` stays correct for
+Every taken-name refusal on the WebDAV surface returned `412`, where RFC 4918
+§9.3.1 names `405` for a `MKCOL` on an already-mapped URL; `412` stays correct for
 `COPY`/`MOVE` (§9.8.5). It matters because a sync client calls `MKCOL` on
 directories that may already exist and reads `405` as "already there, carry on",
-while `412` is a precondition it never set. Found by running
-`tests/e2e/test_live_webdav.py` against the deployment; that test fails until the
-fix ships.
+while `412` is a precondition it never set.
+
+Fixed, deployed, and confirmed against the deployment by
+`tests/e2e/test_live_webdav.py`, which now passes.

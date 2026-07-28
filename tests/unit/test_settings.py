@@ -276,7 +276,11 @@ def compose_environment_keys() -> set[str]:
     """
     text = COMPOSE_COOLIFY.read_text(encoding="utf-8")
     api = text.split("\n  dashboard:", 1)[0]
-    return set(re.findall(r"^\s{6,}([A-Z][A-Z0-9_]+):", api, re.M))
+    # List form, deliberately. `- KEY` passes a variable through only when it is
+    # set; the mapping form `KEY: ${KEY:-}` always defines the key as an empty
+    # string, and 49 of these settings are non-optional and cannot parse "".
+    # That distinction took the deployment down once.
+    return set(re.findall(r"^\s{6,}-\s*([A-Z][A-Z0-9_]+)(?:=|$)", api, re.M))
 
 
 def test_the_coolify_stack_can_set_every_documented_setting() -> None:
