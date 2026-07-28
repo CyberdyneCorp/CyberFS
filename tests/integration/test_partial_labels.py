@@ -291,7 +291,9 @@ def test_a_stale_precondition_is_refused_and_changes_nothing(client: TestClient)
 
 
 def test_a_viewer_is_refused_end_to_end(client: TestClient) -> None:
-    node = folder(client, ALICE, root_id(client, ALICE), "shared")
+    # Not "shared": that name is reserved at the root of a tree, so the create
+    # answers 422 before the grant under test is ever reached.
+    node = folder(client, ALICE, root_id(client, ALICE), "viewer-case")
     root_id(client, BOB)
     granted = client.put(
         f"/api/v1/nodes/{node}/grants",

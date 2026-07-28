@@ -327,14 +327,22 @@ class SqlNodeRepository:
         )
         # The recursion carries only ids; the node columns are joined on at the
         # end so the CTE stays narrow however wide `NodeRow` grows.
+        #
+        # `NodeRow` is selected as an entity, so each result row is a
+        # `(seed_id, NodeRow)` pair and the row is mapped with `node_from_row`.
+        # Not `node_from_mapping`: that one reads flat column keys, and a row
+        # mixing a scalar with an entity puts the whole entity under one key --
+        # which raised `KeyError: 'id'` on every trash listing until CI ran this
+        # against real Postgres. The fake repository has no such distinction, so
+        # no unit test could have shown it.
         result = await self._session.execute(
-            select(walk.c.seed_id, walk.c.depth, m.NodeRow)
+            select(walk.c.seed_id, m.NodeRow)
             .join(m.NodeRow, m.NodeRow.id == walk.c.next_id)
             .order_by(walk.c.seed_id, walk.c.depth.desc())
         )
         chains: dict[uuid.UUID, list[Node]] = {node_id: [] for node_id in node_ids}
-        for row in result.mappings():
-            chains[row["seed_id"]].append(mappers.node_from_mapping(dict(row)))
+        for seed_id, row in result:
+            chains[seed_id].append(mappers.node_from_row(row))
         return {node_id: tuple(chain) for node_id, chain in chains.items()}
 
     async def list_trashed_before(self, cutoff: datetime, *, limit: int) -> tuple[Node, ...]:
