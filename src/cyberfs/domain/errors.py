@@ -340,26 +340,6 @@ class DependencyUnavailableError(CyberFSError):
     title = "A required dependency is unavailable"
 
 
-class DependencyForbiddenError(CyberFSError):
-    """A dependency answered, and refused CyberFS itself.
-
-    Distinct from `DependencyUnavailableError` because the two call for opposite
-    responses. "Unavailable" is transient and a retry is reasonable; being
-    refused is a standing fact about how CyberFS is configured, and no number of
-    retries will change it.
-
-    The distinction is not academic. Sharing by email answered
-    `503 the user directory is unavailable` in production for every address,
-    because CyberFS's OAuth client had been registered with no scopes and
-    CyberdyneAuth was returning `403 Insufficient scope: directory:read
-    required`. Every layer reported an outage, so the obvious response was to
-    wait for it to clear -- which it never would.
-    """
-
-    code = "dependency_forbidden"
-    title = "A dependency refused this deployment"
-
-
 class CacheUnavailableError(CyberFSError):
     """The cache could not serve or accept an operation.
 

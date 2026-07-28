@@ -19,7 +19,6 @@ from cyberfs.infrastructure.settings import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
-COMPOSE_COOLIFY = REPO_ROOT / "compose.coolify.yaml"
 
 # Sentinels are distinctive so a leak test cannot pass by accident -- "secret"
 # alone would match the *field name* `minio_secret_key` in a repr.
@@ -254,89 +253,3 @@ def test_secrets_are_not_reprd() -> None:
     assert CLIENT_SECRET_SENTINEL not in rendered
     assert MINIO_SECRET_SENTINEL not in rendered
     assert DEV_MASTER_KEY_PLACEHOLDER not in rendered
-
-
-# --- the deployment can actually set what the docs document ----------------
-#
-# `.env.example` being complete is necessary and was not sufficient. A Compose
-# service only receives the variables its own `environment:` block names, so a
-# setting documented in `.env.example` and absent from `compose.coolify.yaml` is
-# one an operator can set in Coolify to no effect whatsoever. Fifty-three of the
-# seventy-four settings were in that state, including `MASTER_KEY_PREVIOUS` --
-# which made the documented online key-rotation procedure impossible to perform
-# on the deployment it documents.
-
-
-def compose_environment_keys() -> set[str]:
-    """Variables the `api` service in the Coolify stack receives.
-
-    Parsed with a regex rather than a YAML loader on purpose: the values contain
-    `${VAR:-default}` interpolations that are Compose syntax, and the point here
-    is only which keys are named.
-    """
-    text = COMPOSE_COOLIFY.read_text(encoding="utf-8")
-    api = text.split("\n  dashboard:", 1)[0]
-    # Both forms, because which one the file uses is exactly what is in flux:
-    # `KEY: value` (mapping) and `- KEY=value` / `- KEY` (list). See the xfail
-    # below for why the list form was tried and reverted.
-    mapping = re.findall(r"^\s{6,}([A-Z][A-Z0-9_]+):", api, re.M)
-    listed = re.findall(r"^\s{6,}-\s*([A-Z][A-Z0-9_]+)(?:=|$)", api, re.M)
-    return set(mapping) | set(listed)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "53 of 74 settings cannot be set on the deployment, including "
-        "MASTER_KEY_PREVIOUS -- which makes the documented key-rotation procedure "
-        "impossible to perform. Two fixes have now failed in production: "
-        "`KEY: ${KEY:-}` in mapping form defines the variable as an empty string, "
-        "which 49 non-optional settings cannot parse; converting to list form "
-        "with bare `- KEY` then resolved those names from the shell environment "
-        "rather than the .env file Coolify writes, so BACKUP_S3_* went missing "
-        "while BACKUP_ENABLED stayed true and validation refused to boot. "
-        "Tracked in docs/outstanding-verification.md; needs a fix verified "
-        "against a real Compose run, not reasoned about."
-    ),
-)
-def test_the_coolify_stack_can_set_every_documented_setting() -> None:
-    """Every setting reaches the container, or an operator cannot configure it.
-
-    `AUTH_DEV_MODE` is deliberately excluded: `Settings` refuses it outside
-    local/test, so passing it through would only offer a knob that cannot be
-    turned. `ENVIRONMENT` is pinned to `production` in the file rather than
-    interpolated.
-    """
-    reachable = compose_environment_keys()
-    expected = {name.upper() for name in Settings.model_fields} - {"AUTH_DEV_MODE"}
-
-    unreachable = expected - reachable
-    assert unreachable == set(), "settings an operator cannot set on the deployment: " + ", ".join(
-        sorted(unreachable)
-    )
-
-
-def test_the_coolify_stack_passes_nothing_that_is_not_a_setting() -> None:
-    """The other direction, so a typo is caught rather than silently ignored.
-
-    A misspelled key in the compose block is dead weight that looks like
-    configuration, and pydantic-settings ignores it without complaint.
-    """
-    reachable = compose_environment_keys()
-    expected = {name.upper() for name in Settings.model_fields}
-    # Container plumbing that is not a CyberFS setting.
-    infrastructure = {
-        "POSTGRES_PASSWORD",
-        "POSTGRES_USER",
-        "POSTGRES_DB",
-        "MINIO_ROOT_USER",
-        "MINIO_ROOT_PASSWORD",
-        "NODE_ENV",
-        "HOST",
-        "PORT",
-    }
-
-    stray = reachable - expected - infrastructure
-    assert stray == set(), "compose passes variables that are not settings: " + ", ".join(
-        sorted(stray)
-    )

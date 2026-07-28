@@ -102,35 +102,6 @@ exits non-zero and reports `healthy: False`.
   `backup_tool_unavailable` error.
 - Network access to the target Postgres and both MinIO endpoints.
 
-### The dump's name understates what it is
-
-The artifact is stored as `dump.sql.gz`, and it is **neither SQL nor gzip**. It is
-a `pg_dump --format=custom` archive — verify with its first five bytes, which are
-`PGDMP`. The name is historical and worth knowing about before an incident,
-because the obvious manual reading of it is wrong:
-
-```sh
-gunzip -c dump.sql.gz | psql ...   # WRONG: not gzip, not SQL; fails immediately
-pg_restore --no-owner --no-privileges -d "$TARGET" dump.sql.gz   # correct
-```
-
-`just restore` uses `pg_restore` already, so the automated path is unaffected;
-this matters only for a manual restore, which is exactly the situation where the
-extension is the first thing anyone looks at. A custom-format archive is also
-already compressed, so it does not need decompressing.
-
-### What a restored dump is a snapshot *of*
-
-The manifest records `schema_revision` — the Alembic head at backup time. A dump
-restored into an empty database therefore arrives at *that* revision, not
-necessarily at the code's current head, so migrations still have to run afterwards
-if the deployment has moved on. Check it before restoring:
-
-```sh
-python -c "import json,sys; print(json.load(sys.stdin)['schema_revision'])" < manifest.json
-uv run alembic heads   # compare
-```
-
 ## Non-destructive by default
 
 A restore **refuses** to run against a stack that already contains data unless

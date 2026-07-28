@@ -14,35 +14,18 @@ list short: an entry either gets done and deleted, or becomes a change of its ow
 
 **Spec:** `backup-restore` — "Restore procedure", "Restore is tested automatically".
 
-**The artifact is now verified; the restore still is not.** Pulled the 2026-07-28
-03:00 UTC production backup straight out of `cyberfs-backups` and checked it:
+Done: backups are enabled against a separate MinIO instance over TLS, and a
+seeded run produced a `verified` artifact — dump, manifest, and 87 mirrored
+objects off-site, `skew_missing_in_manifest` 0, `MASTER_KEY` confirmed absent
+from both the real manifest and the real dump, plain and encrypted seed files
+reading back byte-identical.
 
-- `dump.sql.gz` + `manifest.json` + **85 mirrored objects**, matching the
-  manifest's `object_count` and its 85 `entries` exactly.
-- `dump_checksum` in the manifest equals the SHA-256 of the bytes actually stored
-  (`a285b8e3…`), so the artifact is intact and not truncated.
-- First five bytes are `PGDMP`, so it is a real `pg_dump --format=custom` archive
-  rather than an empty or partial file.
-- `MASTER_KEY` appears in **neither** the dump nor the manifest, which is the
-  security property `backup-restore` requires.
-- `schema_revision` is `b7e3c9a1d2f5` — one revision behind current head, so a
-  restore of this artifact needs migrations run afterwards.
-
-So the backup is fetchable, complete, internally consistent, and key-free.
-
-**What remains is loading it into a Postgres and reading content back**, which is
-the only thing that proves a restore. It needs a scratch stack: the production
-database host is an internal Compose name and is not reachable from a workstation,
-and restoring anywhere real is destructive. Blocked on a local Docker daemon —
-Docker Desktop's backend runs but its Linux VM never boots, so `docker info` fails
-and no scratch Postgres can be started.
-
-When Docker is available:
-
-```sh
-just up                       # scratch Postgres, Redis, MinIO
-just restore <backup_id>      # non-destructive against an empty stack
-```
+Not done: **restoring from it.** The automated round trip in
+`tests/integration/test_backup_restore_roundtrip.py` runs in CI, so the code path
+is exercised — but with CI-made artifacts, on CI's Postgres, under CI's key. It
+does not prove that *this* dump, from *this* server, with *this* `MASTER_KEY`,
+restores. Restoring is destructive, so it needs a scratch stack; see
+[`restore-runbook.md`](restore-runbook.md).
 
 Was `bootstrap-cyberfs` task 12.8.
 
@@ -69,26 +52,13 @@ encrypted content permanently, and no restore can recover it.
 It needs to be held somewhere else, under its own custody, before the backups
 above mean anything.
 
-## 4. Migration rollback — **closed**
+## 4. Migration rollback
 
 **Spec:** none directly; every change's `design.md` claims a rollback path.
 
-Proved in CI on 2026-07-28. `tests/integration/test_migrations.py` now walks the
-whole chain down to base and back up on a database of its own, checks that a
-single step back and forward actually removes and restores the newest column
-rather than passing on a no-op `downgrade`, and verifies the sealing-id backfill
-against a row seeded at the previous revision.
-
-Driven through `command.upgrade(alembic_config(), ...)` with `DATABASE_URL`
-pointed at the scratch database — the same call the container entrypoint makes —
-so the rollback is exercised on the path the deployment actually uses rather than
-through a synchronous driver the project does not install.
-
-The rollback plans in each design document are therefore no longer claims. Note
-what this does and does not cover: it proves the schema round-trips, not that any
-particular deployment's *data* survives a downgrade. `c8f4a2e6d1b7`'s downgrade
-drops a column, and its docstring says plainly that doing so returns the database
-to a state where copies of encrypted content are unreadable.
+`alembic upgrade head` runs in CI and on every deploy. `downgrade` is written for
+all seven migrations and **exercised for none of them**. The rollback plan in each
+design document is therefore unproven.
 
 ## 5. Browser sign-in
 
@@ -139,15 +109,15 @@ Note also that no in-process test can cover the distinction: the integration sui
 stubs the directory, and a stub cannot be missing a scope. It belongs to the e2e
 tier or nowhere.
 
-## 8. `MKCOL` on an existing collection answers the wrong status — **closed**
+## 8. `MKCOL` on an existing collection answers the wrong status
 
 **Spec:** `webdav-compatibility`.
 
-Every taken-name refusal on the WebDAV surface returned `412`, where RFC 4918
-§9.3.1 names `405` for a `MKCOL` on an already-mapped URL; `412` stays correct for
+Fixed in `adapters/inbound/api/routers/webdav.py` but **not yet deployed**: every
+taken-name refusal on the WebDAV surface returned `412`, where RFC 4918 §9.3.1
+names `405` for a `MKCOL` on an already-mapped URL. `412` stays correct for
 `COPY`/`MOVE` (§9.8.5). It matters because a sync client calls `MKCOL` on
 directories that may already exist and reads `405` as "already there, carry on",
-while `412` is a precondition it never set.
-
-Fixed, deployed, and confirmed against the deployment by
-`tests/e2e/test_live_webdav.py`, which now passes.
+while `412` is a precondition it never set. Found by running
+`tests/e2e/test_live_webdav.py` against the deployment; that test fails until the
+fix ships.
