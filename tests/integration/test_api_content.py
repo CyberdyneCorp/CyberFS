@@ -431,9 +431,7 @@ def test_copying_an_encrypted_file_leaves_the_copy_readable(client: TestClient) 
     )
     node = created.json()["id"]
 
-    copied = client.post(
-        f"/api/v1/nodes/{node}/copy", json={"parent_id": folder}, headers=ALICE
-    )
+    copied = client.post(f"/api/v1/nodes/{node}/copy", json={"parent_id": folder}, headers=ALICE)
     assert copied.status_code == HTTPStatus.CREATED, copied.text
     copy_id = copied.json()["id"]
 
