@@ -381,13 +381,44 @@ def test_an_encrypted_file_accepts_a_second_version_and_both_stay_readable(
     assert {v["sequence"] for v in versions} == {1, 2}
     assert all(v["encrypted"] for v in versions), versions
 
-    # The older version must still decrypt: a replacement DEK would have left
-    # these bytes sealed under a key nothing stores any more.
-    first_version = next(v for v in versions if v["sequence"] == 1)
-    restored = client.post(
-        f"/api/v1/nodes/{node}/versions/{first_version['id']}/restore", headers=ALICE
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "restoring a version of an ENCRYPTED file yields an empty body. `seal` binds "
+        "frames to the version id as AAD, but `restore_version` copies the source "
+        "ciphertext into a row with a NEW id, so `open` authenticates against the wrong "
+        "id and decrypts nothing. `copy_content` has the same flaw. Pre-existing, and "
+        "tracked in docs/outstanding-verification.md; the fix needs a decision between "
+        "re-sealing on copy and recording the sealing id on the version row."
+    ),
+)
+def test_restoring_a_version_of_an_encrypted_file_returns_its_bytes(client: TestClient) -> None:
+    """Currently broken, and worse than a refusal.
+
+    The restore answers `200` and repoints `current_version_id`, so the node then
+    serves an empty body while every byte is still sitting in the object store
+    sealed under an id nothing reads it with. A user would see their file silently
+    empty itself.
+
+    `strict=True` on purpose: when the underlying bug is fixed this test starts
+    passing and pytest fails the run, which is what forces the xfail to be
+    removed rather than left lying around.
+    """
+    root = root_id(client, ALICE)
+    created = client.put(
+        f"/api/v1/nodes/{root}/files/rolled-back.bin?encrypted=true",
+        content=PAYLOAD,
+        headers=ALICE,
     )
+    node = created.json()["id"]
+    client.put(f"/api/v1/nodes/{node}/content", content=PAYLOAD + b"-v2", headers=ALICE)
+
+    versions = client.get(f"/api/v1/nodes/{node}/versions", headers=ALICE).json()["items"]
+    first = next(v for v in versions if v["sequence"] == 1)
+    restored = client.post(f"/api/v1/nodes/{node}/versions/{first['id']}/restore", headers=ALICE)
     assert restored.status_code == HTTPStatus.OK, restored.text
+
     assert client.get(f"/api/v1/nodes/{node}/content", headers=ALICE).content == PAYLOAD
 
 

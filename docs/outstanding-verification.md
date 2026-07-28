@@ -110,7 +110,48 @@ Two things follow that *are* code:
   stub cannot be missing a scope. `tests/e2e/test_live_sharing.py` now asserts the
   working behaviour and fails until the scope is granted.
 
-## 8. `MKCOL` on an existing collection answers the wrong status
+## 8. Copying or restoring a version of an encrypted file yields an empty body
+
+**Spec:** `content-encryption` — framing; `file-storage` — versions, copy.
+
+**This one loses data from the user's point of view and needs a decision.**
+
+`EncryptionService.seal` binds every frame to the version id
+(`cipher.seal(plaintext, dek, version_id.bytes)`), and `open` authenticates with
+`version.id` from the row it is serving. Two paths copy *sealed bytes* into a row
+that carries a **different** id:
+
+- `ContentService.restore_version` — copies the source object to a new key and
+  writes a new `FileVersion` with a fresh id.
+- `ContentService._copy_content` (behind `POST /nodes/{id}/copy`) — the same
+  shape, for a new node.
+
+In both, `open` then authenticates against an id the bytes were never sealed
+under, decryption produces nothing, and the endpoint returns `200` with an empty
+body. Restore additionally repoints `current_version_id`, so a user who rolls
+back an encrypted file watches it silently empty itself while every byte is still
+in the object store, unreadable.
+
+Pre-existing, from the same commit as the encryption feature. It survived because
+no test copied or restored a version of an *encrypted* file — the existing copy
+and restore tests use plaintext, and the encryption tests never copy.
+
+Pinned by `tests/integration/test_api_content.py::
+test_restoring_a_version_of_an_encrypted_file_returns_its_bytes`, marked
+`xfail(strict=True)` so that fixing the bug fails the run until the marker is
+removed.
+
+Two candidate fixes, and they differ in cost rather than correctness:
+
+1. **Re-seal on copy** — open the source stream with the source id and seal it
+   again under the new one. Self-contained, no migration, but it decrypts and
+   re-encrypts the whole object on every copy and version restore.
+2. **Record the sealing id on the version row** — add a column that defaults to
+   the row's own id, set it to the source's when copying, and have `open` use it.
+   One migration, no re-encryption, and it makes the AAD explicit rather than
+   implied by a column that happens to share a name.
+
+## 9. `MKCOL` on an existing collection answers the wrong status
 
 **Spec:** `webdav-compatibility`.
 

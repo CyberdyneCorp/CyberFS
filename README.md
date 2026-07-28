@@ -135,8 +135,37 @@ Common `just` recipes (run `just` for the full list):
 
 ## Architecture
 
-CyberFS follows **hexagonal (ports and adapters)** architecture. Source is under
-`src/cyberfs/`:
+CyberFS follows **hexagonal (ports and adapters)** architecture. Every arrow
+below points inward, and that is the whole rule: `domain/` names what it needs as
+a `Protocol`, and only the composition root knows which concrete adapter answers.
+
+```mermaid
+flowchart TB
+    subgraph outside[" "]
+        direction TB
+        IN["<b>adapters/inbound</b><br/>FastAPI routers · WebDAV · S3 SigV4"]
+        OUT["<b>adapters/outbound</b><br/>Postgres · Redis · MinIO · AES-GCM · CyberdyneAuth"]
+        INFRA["<b>infrastructure</b><br/>settings · engine · logging · scheduler"]
+    end
+    APP["<b>application</b><br/>use-case services: nodes, content, sharing,<br/>encryption, admin, jobs, backup, restore"]
+    DOM["<b>domain</b><br/>pure rules + value objects<br/><i>domain/ports/</i> declares the Protocols"]
+
+    IN -->|calls| APP
+    APP -->|depends on| DOM
+    OUT -.->|implements ports declared by| DOM
+    INFRA -.->|wires| OUT
+
+    classDef core fill:#1f6f43,stroke:#0d3b23,color:#fff
+    classDef edge fill:#24506e,stroke:#12293a,color:#fff
+    class DOM,APP core
+    class IN,OUT,INFRA edge
+    style outside fill:none,stroke:none
+```
+
+A solid arrow is a direct call; a dashed one is a port being satisfied. Nothing
+points outward — `tests/unit/test_layering.py` fails the build if it ever does.
+
+Source is under `src/cyberfs/`:
 
 - **`domain/`** — pure business rules and value objects (keys, framing, sharing,
   permissions, links, auth policy) plus port protocols in `domain/ports/`. No
@@ -153,6 +182,41 @@ CyberFS follows **hexagonal (ports and adapters)** architecture. Source is under
 The layering is enforced in code: `tests/unit/test_layering.py` fails if an
 inner layer imports an outer one. See [`docs/architecture.md`](docs/architecture.md)
 for the full ports-and-adapters map.
+
+### One filesystem, three surfaces
+
+REST, WebDAV and S3 are three protocols over the *same* tree, not three stores.
+Each terminates at the same use-case services, so quota, permissions, encryption
+and the trash apply identically however a byte arrives.
+
+```mermaid
+flowchart LR
+    REST["<b>REST</b> /api/v1<br/><small>OAuth2 bearer</small>"]
+    DAV["<b>WebDAV</b> /webdav<br/><small>Basic, S3 access key</small>"]
+    S3["<b>S3</b> /s3<br/><small>SigV4, S3 access key</small>"]
+
+    NODES["<b>NodeService</b><br/>tree, trash, labels, permissions"]
+    CONTENT["<b>ContentService</b><br/>versions, framing, quota"]
+
+    DB[("Postgres<br/>metadata")]
+    OBJ[("MinIO<br/>sealed bytes")]
+
+    REST --> NODES & CONTENT
+    DAV --> NODES & CONTENT
+    S3 --> NODES & CONTENT
+    NODES --> DB
+    CONTENT --> DB
+    CONTENT --> OBJ
+
+    classDef surface fill:#24506e,stroke:#12293a,color:#fff
+    classDef svc fill:#1f6f43,stroke:#0d3b23,color:#fff
+    class REST,DAV,S3 surface
+    class NODES,CONTENT svc
+```
+
+The consequence worth stating: a file written over WebDAV carries the same
+`ETag` and the same plaintext digest REST reports, and a node in the trash is
+absent from all three. `S3` is served only when `S3_API_ENABLED` is set.
 
 ## Testing
 

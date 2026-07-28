@@ -82,6 +82,33 @@ Every port is a `Protocol` under `src/cyberfs/domain/ports/`. Each is
 implemented by one or more concrete outbound adapters, selected and constructed
 at the composition root.
 
+Green is the port — a `Protocol` in `domain/`, which knows nothing of what
+answers it. Blue is the concrete adapter the composition root supplies.
+
+```mermaid
+flowchart LR
+    REPO["<b>repositories.py</b><br/>UnitOfWork · repositories<br/>AdminQueries"] --> PG[("Postgres<br/>db/ — SqlUnitOfWork<br/>Sql*Repository")]
+    STORE["<b>storage.py</b><br/>ObjectStore"] --> MINIO[("MinIO / S3<br/>objects/minio_store.py")]
+    STORE -.->|second instance| BUCKET[("Backup target<br/>BACKUP_S3_*")]
+    CRYPTO["<b>crypto.py</b><br/>KeyProvider<br/>ContentCipher"] --> AES["crypto.py — MasterKeyProvider<br/>cipher.py — AesGcmContentCipher"]
+    IDENT["<b>identity.py</b><br/>TokenVerifier<br/>TokenIntrospector<br/>UserDirectory"] --> AUTHSVC["auth/ — JwtTokenVerifier<br/>TokenIntrospectionClient<br/>CyberdyneDirectory"]
+    CACHE["<b>cache.py</b><br/>Cache"] --> REDIS[("Redis<br/>cache/redis_cache.py<br/>NullCache when absent")]
+    AUDIT["<b>audit.py</b><br/>AuditSink"] --> LOGSINK["audit_log.py<br/>LoggingAuditSink"]
+    BACKUP["<b>backup.py</b><br/>MetadataDump<br/>BackupRepository<br/>BinarySink"] --> PGDUMP["backup/pg_dump.py<br/>PgDumpMetadataDump"]
+    HEALTH["<b>health.py</b><br/>HealthProbe"] --> PROBES["composition.py<br/>Database/Auth/ObjectStore/<br/>Encryption/Cache/Backup probes"]
+
+    classDef port fill:#1f6f43,stroke:#0d3b23,color:#fff
+    classDef adapter fill:#24506e,stroke:#12293a,color:#fff
+    class REPO,STORE,CRYPTO,IDENT,CACHE,AUDIT,BACKUP,HEALTH port
+    class PG,MINIO,BUCKET,AES,AUTHSVC,REDIS,LOGSINK,PGDUMP,PROBES adapter
+```
+
+Two are worth noticing. `ObjectStore` is implemented **twice** — once for the
+primary bucket and once for the backup target — which is why mirroring is a
+streamed `get()` → `put()` that never decrypts. And `identity.py` deliberately
+splits verification from introspection, so a revocation-sensitive route cannot be
+written against the cheap check by accident.
+
 ### Persistence — `domain/ports/repositories.py`
 
 The repository protocols express *what the tree needs* (ancestor walks, subtree
@@ -177,6 +204,33 @@ live in `composition.py`: `DatabaseHealthProbe`, `AuthHealthProbe`,
 ## Request lifecycle
 
 A typical authenticated request flows strictly inward and back out:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant R as Router<br/>(inbound/api/routers)
+    participant D as Dependencies<br/>(dependencies.py)
+    participant S as Use case<br/>(app.state.nodes)
+    participant U as UnitOfWork<br/>(port)
+    participant A as Adapters<br/>(SQL · MinIO · Redis)
+
+    C->>R: PUT /api/v1/nodes/{id}/content
+    R->>D: resolve principal + transaction
+    D->>A: verify token (JWKS, or introspect when fresh)
+    D->>U: open one UnitOfWork for this request
+    D-->>R: (user, uow)
+    R->>S: replace(uow, user, node_id, stream)
+    S->>U: uow.nodes.get / quotas / versions
+    U->>A: SQL
+    S->>A: seal frames, stream to the object store
+    S-->>R: Node
+    R->>U: commit
+    Note over R,U: anything left uncommitted rolls back,<br/>so a handler that forgets cannot half-save
+    R-->>C: 200 + NodeSummary
+```
+
+Step by step:
 
 1. **Inbound API.** A router under
    `adapters/inbound/api/routers/` (`nodes.py`, `content.py`, `shares.py`,
