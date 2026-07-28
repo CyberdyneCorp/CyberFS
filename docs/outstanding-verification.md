@@ -14,18 +14,33 @@ list short: an entry either gets done and deleted, or becomes a change of its ow
 
 **Spec:** `backup-restore` — "Restore procedure", "Restore is tested automatically".
 
-Done: backups are enabled against a separate MinIO instance over TLS, and a
-seeded run produced a `verified` artifact — dump, manifest, and 87 mirrored
-objects off-site, `skew_missing_in_manifest` 0, `MASTER_KEY` confirmed absent
-from both the real manifest and the real dump, plain and encrypted seed files
-reading back byte-identical.
+**The artifact is verified; the restore is not.** The 2026-07-28 03:00 UTC
+production backup was pulled from `cyberfs-backups` and checked:
 
-Not done: **restoring from it.** The automated round trip in
-`tests/integration/test_backup_restore_roundtrip.py` runs in CI, so the code path
-is exercised — but with CI-made artifacts, on CI's Postgres, under CI's key. It
-does not prove that *this* dump, from *this* server, with *this* `MASTER_KEY`,
-restores. Restoring is destructive, so it needs a scratch stack; see
-[`restore-runbook.md`](restore-runbook.md).
+- `dump.sql.gz` + `manifest.json` + **85 mirrored objects**, matching the
+  manifest's `object_count` and its 85 `entries`.
+- The manifest's `dump_checksum` equals the SHA-256 of the stored bytes
+  (`a285b8e3…`), so the artifact is intact rather than truncated.
+- First five bytes are `PGDMP` — a real `pg_dump --format=custom` archive.
+- `MASTER_KEY` is absent from **both** dump and manifest, which is the security
+  property the spec requires.
+- `schema_revision` is `b7e3c9a1d2f5`, one behind head, so a restore of this
+  artifact needs migrations run afterwards.
+
+**What remains is loading it into a Postgres and reading content back.** That
+needs a scratch stack: production's database host is an internal Compose name and
+is unreachable from a workstation, and restoring anywhere real is destructive.
+Blocked on a local Docker daemon — Docker Desktop's backend runs but its Linux VM
+never boots, so `docker info` fails.
+
+Note for whoever does it: the artifact is named `dump.sql.gz` and is **neither
+SQL nor gzip**. `gunzip | psql` fails; `pg_restore` is required. `just restore`
+already does the right thing.
+
+```sh
+just up                       # scratch Postgres, Redis, MinIO
+just restore <backup_id>      # non-destructive against an empty stack
+```
 
 Was `bootstrap-cyberfs` task 12.8.
 
@@ -57,8 +72,13 @@ above mean anything.
 **Spec:** none directly; every change's `design.md` claims a rollback path.
 
 `alembic upgrade head` runs in CI and on every deploy. `downgrade` is written for
-all seven migrations and **exercised for none of them**. The rollback plan in each
-design document is therefore unproven.
+all **eight** migrations and is currently exercised for none of them, so the
+rollback plan in each design document is unproven **in the present tree**.
+
+It was proved once. The tests in item 9 walked the whole chain down to base and
+back up in CI (run 30351989609, 341 integration tests) before being reverted
+during the outage recovery. Re-applying them closes this item outright — the work
+exists and passed, it is simply not in the tree.
 
 ## 5. Browser sign-in
 
@@ -105,19 +125,54 @@ retry that can never succeed — and it cost real time diagnosing exactly this.
 Worth separating the two before the next misconfiguration hides behind the same
 message.
 
-Note also that no in-process test can cover the distinction: the integration suite
-stubs the directory, and a stub cannot be missing a scope. It belongs to the e2e
-tier or nowhere.
+An earlier note here claimed no in-process test could cover the distinction,
+because every suite stubs the directory and a stub cannot be missing a scope. That
+was wrong: driving `CyberdyneDirectory` through `httpx.MockTransport` covers it
+exactly, and fifteen such tests were written — for an adapter that until then had
+none. They are part of the reverted work in item 9.
 
-## 8. `MKCOL` on an existing collection answers the wrong status
+## 8. `MKCOL` on an existing collection answers the wrong status — **closed**
 
 **Spec:** `webdav-compatibility`.
 
-Fixed in `adapters/inbound/api/routers/webdav.py` but **not yet deployed**: every
-taken-name refusal on the WebDAV surface returned `412`, where RFC 4918 §9.3.1
-names `405` for a `MKCOL` on an already-mapped URL. `412` stays correct for
+Every taken-name refusal on the WebDAV surface returned `412`, where RFC 4918
+§9.3.1 names `405` for a `MKCOL` on an already-mapped URL; `412` stays correct for
 `COPY`/`MOVE` (§9.8.5). It matters because a sync client calls `MKCOL` on
 directories that may already exist and reads `405` as "already there, carry on",
-while `412` is a precondition it never set. Found by running
-`tests/e2e/test_live_webdav.py` against the deployment; that test fails until the
-fix ships.
+while `412` is a precondition it never set.
+
+Fixed in `adapters/inbound/api/routers/webdav.py`, pinned at the integration and
+e2e tiers, and confirmed against the deployment before the outage —
+`tests/e2e/test_live_webdav.py` passed in the 82/12/0 run.
+
+## 9. Work reverted during the outage, awaiting re-application
+
+Recovering the 2026-07-28 outage meant reverting `dcdbcaf..8fd349c` wholesale,
+because the cause was not established and the priority was restoring service. The
+revert is at `f2fded4`, whose tree is byte-identical to `dd1a500`. None of the
+work below was wrong — it is simply no longer in the tree, and each piece is worth
+re-applying once the deployment is healthy:
+
+- **The directory refusal-versus-outage distinction.** A `403 Insufficient scope`
+  from CyberdyneAuth was reported as `dependency_unavailable`/503, which reads as
+  transient and invites a retry that can never succeed. `DependencyForbiddenError`
+  maps to 502 and names the missing scope. Came with **fifteen tests** for
+  `CyberdyneDirectory`, an adapter that previously had none — every sharing suite
+  stubs the port, which is exactly why the production break was invisible.
+- **Migration rollback tests.** These *closed* item 4 in CI (run 30351989609, 341
+  integration tests): the whole chain down to base and back up, a single step
+  against the newest revision, and the sealing-id backfill checked on a row seeded
+  at the previous revision.
+- **The settings-reachability finding.** 53 of 74 settings could not be set on the
+  deployment because `compose.coolify.yaml` names only 21 in its `environment:`
+  block. `MASTER_KEY_PREVIOUS` was among them, which makes the documented online
+  key-rotation procedure impossible to perform. **The finding stands; both
+  attempted fixes failed in production** — `KEY: ${KEY:-}` defines the variable as
+  an empty string, which 49 non-optional settings cannot parse, and a bare `- KEY`
+  in list form resolves from the shell environment rather than the `.env` file
+  Coolify writes. A third attempt must be validated against a real
+  `docker compose config` run before it goes near a deployment.
+- **The workload tier**, which seeded 240 nodes on the deployment and walked the
+  paginated surfaces.
+- **Runbook corrections** about the dump's true format and its `schema_revision`.
+

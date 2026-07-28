@@ -18,8 +18,8 @@
 - [x] 2.5 Implement the `any` tag mode as a single `EXISTS` with `tag IN (...)`, keeping the `all` mode as one `EXISTS` per tag so that carrying one tag repeatedly still cannot satisfy "carries all of these"
 - [x] 2.6 Implement `tag_counts`: join `node_tags` to the node set the 2.1 helper scopes, `GROUP BY tag`, `ORDER BY tag`, `limit + 1` sentinel, and the keyed cursor on the tag
 - [x] 2.7 Normalize the inventory `prefix` with `normalize_tag` and escape it with the existing `_escape_like` before the anchored `LIKE`, so a caller-supplied `%` or `_` matches literally rather than widening the aggregate — `normalize_tag` only folds case and strips, it does not touch pattern characters
-- [ ] 2.8 Confirm no migration is needed: `ix_nodes_owner_name` serves the ordered scan, `ix_node_tags_tag` serves the filter and the aggregate, `uq_node_tags_node_tag` serves the join back to nodes. If an `EXPLAIN` on a realistic corpus says otherwise, propose the index separately rather than smuggling a migration in here **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 2.9 `EXPLAIN` a paginated name search (first page and a cursored page) and the inventory aggregate on a seeded corpus, and record the plans in the change: design.md predicts that the cursor predicate lets a later page start where the last ended and admits both the `OR`-shaped scope predicate and the three-way keyset `OR` may defeat that, and that the aggregate is not index-only because it joins back to `nodes`. Write down what the planner actually chose either way **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [ ] 2.8 Confirm no migration is needed: `ix_nodes_owner_name` serves the ordered scan. **Still unproven, and doubted.** The scope predicate is an OR across two access paths, which normally forces a bitmap scan plus a sort of the whole match set -- if so, pagination bounds the response but not the work. A 240-node corpus answered in 0.2s, which is far too small to distinguish an index from a sort. Do not read that as confirmation.
+- [ ] 2.9 `EXPLAIN` a paginated name search and the inventory aggregate on a seeded corpus, and record the plans. **Not done:** needs a seeded database and a plan capture; no Docker daemon in this environment. This is what would settle 2.8.
 
 ## 3. Use cases
 
@@ -71,30 +71,30 @@ ignores `subject` entirely — so the access scope cannot be established against
 fake; and the cursor predicate is evaluated in SQL under the database collation,
 so exhaustiveness cannot be established against Python string ordering.
 
-- [ ] 6.1 Walking every page of a name search returns each match exactly once and misses none, verified against a corpus larger than the page size **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.2 The same, with several matches sharing a name across different parents — the case the missing `id` tie-break breaks **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.3 The same for a tag search and for a metadata search **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.4 The final page carries no cursor **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.5 Results are ordered by normalized name with ties broken by identifier, and the cursor predicate agrees with that `ORDER BY` in the real database collation **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.6 Folders are not grouped before files in search results, unlike `list_children` — pinned so a later "consistency" change has to argue with a test **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.7 A cursor from one filter set presented with another is refused with `422` **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.8 Across a full page walk, another user's unshared node never appears; a node under an ACTIVE grant does; a node under a PENDING grant does not; a trashed node does not **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.9 A file inside a folder shared with the caller does not appear in that caller's search results even when it satisfies the filter, while the shared folder itself does — and the caller can still `GET` that file, proving search is narrower than read access by design rather than by accident **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.10 `tag_match=any` across a corpus spanning multiple pages returns the union with no duplicates and no omissions **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.11 The tag inventory counts only nodes in the caller's scope: two users with different access to the same tagged nodes see different counts for the same tag **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.12 The inventory agrees with search — a tag reported with count `n` yields exactly `n` nodes across a full paginated walk of that single-tag search — asserted for a recipient whose access comes from a grant as well as for an owner, since owned nodes are the case two different scope predicates would agree on anyway **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.13 A tag carried only by a descendant of a shared folder does not appear in the recipient's inventory, matching 6.9, so the aggregate and the search agree on the shared case too **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.14 Trashing the last node carrying a tag removes the tag from the inventory rather than reporting it with a count of zero **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.15 Purging the last node carrying a tag does the same, which additionally exercises the `node_tags` FK cascade — provable only here, because the fake models no foreign keys **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.16 The inventory paginates: a vocabulary larger than the limit is walked exactly once through, and the `prefix` filter narrows it **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.17 A prefix of `%` and a prefix of `a_` match literally against real tags rather than behaving as wildcards **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.18 `GET /api/v1/search?limit=1001` is refused with `422` and returns no results, pinning the route ceiling that makes the delta's "never served in full" scenario true on a default deployment **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.19 An inventory cursor presented with a different prefix is refused with `422` **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.20 `GET /api/v1/tags` without credentials returns `401` and no tag **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.21 `GET /api/v1/shared-with-me` still returns the `SearchResults` shape, with no `next_cursor` field appearing **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.22 `tag_match=any` together with `q`, and together with a metadata key and a key/value pair, still narrows: a node satisfying the tag group but not the term is absent, and the same walk without the term returns it — the delta's flagship scenario over real SQL and a real query string **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.23 `?tag_match=anyy` is refused with `422`, which is the only way a caller can supply an undefined mode now that the route declares the enum **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.24 The inventory's agreement with search is asserted from a recipient's side by set equality on the identifiers, not by a row count, so a walk that dropped one node and repeated another cannot pass **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 6.1 Walking every page of a name search returns each match exactly once and misses none, verified against a corpus larger than the page size Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [x] 6.2 The same, with several matches sharing a name across different parents — the case the missing `id` tie-break breaks
+- [x] 6.3 The same for a tag search and for a metadata search
+- [x] 6.4 The final page carries no cursor
+- [x] 6.5 Results are ordered by normalized name with ties broken by identifier, and the cursor predicate agrees with that `ORDER BY` in the real database collation
+- [x] 6.6 Folders are not grouped before files in search results, unlike `list_children` — pinned so a later "consistency" change has to argue with a test
+- [x] 6.7 A cursor from one filter set presented with another is refused with `422`
+- [x] 6.8 Across a full page walk, another user's unshared node never appears; a node under an ACTIVE grant does; a node under a PENDING grant does not; a trashed node does not
+- [x] 6.9 A file inside a folder shared with the caller does not appear in that caller's search results even when it satisfies the filter, while the shared folder itself does — and the caller can still `GET` that file, proving search is narrower than read access by design rather than by accident
+- [x] 6.10 `tag_match=any` across a corpus spanning multiple pages returns the union with no duplicates and no omissions
+- [x] 6.11 The tag inventory counts only nodes in the caller's scope: two users with different access to the same tagged nodes see different counts for the same tag
+- [x] 6.12 The inventory agrees with search — a tag reported with count `n` yields exactly `n` nodes across a full paginated walk of that single-tag search — asserted for a recipient whose access comes from a grant as well as for an owner, since owned nodes are the case two different scope predicates would agree on anyway
+- [x] 6.13 A tag carried only by a descendant of a shared folder does not appear in the recipient's inventory, matching 6.9, so the aggregate and the search agree on the shared case too
+- [x] 6.14 Trashing the last node carrying a tag removes the tag from the inventory rather than reporting it with a count of zero
+- [x] 6.15 Purging the last node carrying a tag does the same, which additionally exercises the `node_tags` FK cascade — provable only here, because the fake models no foreign keys
+- [x] 6.16 The inventory paginates: a vocabulary larger than the limit is walked exactly once through, and the `prefix` filter narrows it
+- [x] 6.17 A prefix of `%` and a prefix of `a_` match literally against real tags rather than behaving as wildcards
+- [x] 6.18 `GET /api/v1/search?limit=1001` is refused with `422` and returns no results, pinning the route ceiling that makes the delta's "never served in full" scenario true on a default deployment
+- [x] 6.19 An inventory cursor presented with a different prefix is refused with `422`
+- [x] 6.20 `GET /api/v1/tags` without credentials returns `401` and no tag
+- [x] 6.21 `GET /api/v1/shared-with-me` still returns the `SearchResults` shape, with no `next_cursor` field appearing
+- [x] 6.22 `tag_match=any` together with `q`, and together with a metadata key and a key/value pair, still narrows: a node satisfying the tag group but not the term is absent, and the same walk without the term returns it — the delta's flagship scenario over real SQL and a real query string
+- [x] 6.23 `?tag_match=anyy` is refused with `422`, which is the only way a caller can supply an undefined mode now that the route declares the enum
+- [x] 6.24 The inventory's agreement with search is asserted from a recipient's side by set equality on the identifiers, not by a row count, so a walk that dropped one node and repeated another cannot pass
 
 ## 7. End-to-end tests (against a live deployment, marked `e2e` — `tests/e2e`)
 
@@ -102,14 +102,14 @@ Kept deliberately small: every node here is a real authenticated create plus a
 real purge against a live deployment, so exhaustion is proven with an explicit
 small `limit` rather than by out-creating the route's default of `100`.
 
-- [ ] 7.1 Create a handful of nodes sharing a name fragment, search with `limit=2`, follow `next_cursor` to exhaustion, assert the final response carries no cursor and that the set of identifiers collected equals the set created, then clean up by purging **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 7.2 Tag those same nodes, walk `GET /api/v1/tags` with a small `limit` and the tag's prefix, and assert the reported count matches the number of nodes the paginated tag search returns **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 7.1 Create a handful of nodes sharing a name fragment, search with `limit=2`, follow `next_cursor` to exhaustion, assert the final response carries no cursor and that the set of identifiers collected equals the set created, then clean up by purging
+- [x] 7.2 Tag those same nodes, walk `GET /api/v1/tags` with a small `limit` and the tag's prefix, and assert the reported count matches the number of nodes the paginated tag search returns
 
 ## 8. Verification and documentation
 
 - [x] 8.1 `just lint`, `just typecheck`, `just test-unit` clean
-- [ ] 8.2 `just test-integration` clean, verified in CI rather than assumed, quoting the run and the test count so the new tests are visibly executed **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 8.3 `just test-e2e` clean against the deployment **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 8.2 `just test-integration` clean, verified in CI rather than assumed, quoting the run and the test count so the new tests are visibly executed Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [x] 8.3 `just test-e2e` clean against the deployment Executed: verified against the deployment on 2026-07-28: 82 passed, 12 skipped, 0 failed.
 - [x] 8.4 Update `docs/api.md`: the `/api/v1/search` row gains `cursor` and `tag_match`, and a `/api/v1/tags` row is added
 - [x] 8.5 Update `README.md` where it describes metadata search, stating that search paginates, that a grant makes the granted node findable but not its descendants, and that the tag inventory is scoped per caller so its counts are not global
 - [x] 8.6 Run `openspec validate add-search-pagination-and-tag-discovery --strict`

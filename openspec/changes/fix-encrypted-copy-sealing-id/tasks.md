@@ -11,7 +11,7 @@
 - [x] 2.2 Carry it in both directions in `mappers.py` (`version_to_row`, `version_from_row`)
 - [x] 2.3 Write the Alembic migration on top of `b7e3c9a1d2f5`: add the column nullable, `UPDATE file_versions SET seal_version_id = id`, then set `NOT NULL`. A `server_default` cannot reference another column, which is why it is three statements rather than one
 - [x] 2.4 State in the migration's docstring that the backfill is exact rather than approximate — every existing row was sealed in place, and rows produced by the broken copy paths were already unreadable and cannot be repaired, since the source identifier was never recorded
-- [ ] 2.5 Implement `downgrade` as a plain column drop, and say in the docstring that it returns the database to a schema in which copies of encrypted content are unreadable. Verify `alembic downgrade` then `upgrade` runs. **Written, not executed:** no database in this environment, so the round trip is unproven -- the same gap item 4 of `docs/outstanding-verification.md` records for all seven earlier migrations
+- [ ] 2.5 Implement `downgrade` as a plain column drop, and say in the docstring that it returns the database to a schema in which copies of encrypted content are unreadable. Verify `alembic downgrade` then `upgrade` runs. **Written, verified once, then lost:** the rollback tests proved this in CI (run 30351989609, 341 integration tests) and were reverted during the outage recovery. **Blocked:** the work that would close this was reverted in f2fded4 while recovering a production outage. It is in history at dcdbcaf..8fd349c and is listed for re-application in docs/outstanding-verification.md.
 
 ## 3. Encryption and content
 
@@ -33,17 +33,17 @@
 
 ## 5. Integration tests (real Postgres and MinIO)
 
-- [ ] 5.1 Restore an earlier version of an **encrypted** file and read it back byte for byte. This is the regression test for the reported defect; it currently sits in `tests/integration/test_api_content.py` as `xfail(strict=True)` and the marker comes off here
-- [ ] 5.2 Copy an **encrypted** file and read the copy back byte for byte
-- [ ] 5.3 Copy an encrypted file, then restore a version of the copy — the transitive case, which no plaintext test exercises
-- [ ] 5.4 The copy's stored object is still ciphertext, so the fix did not quietly stop encrypting on the copy path
-- [ ] 5.5 A restored version's digest matches the original's, since the plaintext is the same content
-- [ ] 5.6 Confirm the copy path issues no decrypt: assert the copy is byte-identical **in the object store** to its source, which re-encryption under a new nonce could not produce
+- [x] 5.1 Restore an earlier version of an **encrypted** file and read it back byte for byte. This is the regression test for the reported defect; it currently sits in `tests/integration/test_api_content.py` as `xfail(strict=True)` and the marker comes off here Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [x] 5.2 Copy an **encrypted** file and read the copy back byte for byte
+- [x] 5.3 Copy an encrypted file, then restore a version of the copy — the transitive case, which no plaintext test exercises
+- [ ] 5.4 The copy's stored object is still ciphertext, so the fix did not quietly stop encrypting on the copy path. **Covered at unit level instead** by `test_a_copy_is_byte_identical_in_the_store_so_nothing_was_re_encrypted`, which is a stronger statement -- re-encryption under a fresh nonce could not produce identical bytes. No integration test asserts it separately.
+- [x] 5.5 A restored version's digest matches the original's, since the plaintext is the same content
+- [ ] 5.6 Confirm the copy path issues no decrypt. **Done as a unit test** against the fake object store: byte equality of two stored objects needs no real MinIO and runs on every commit rather than only in CI.
 
 ## 6. Verification
 
 - [x] 6.1 `just lint`, `just typecheck`, `just test-unit` clean
-- [ ] 6.2 `just test-integration` clean, verified from the CI run rather than assumed
-- [ ] 6.3 `alembic upgrade head` on a database holding encrypted content, then read that content back — the backfill has to leave existing files readable
+- [x] 6.2 `just test-integration` clean, verified from the CI run rather than assumed Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [ ] 6.3 `alembic upgrade head` on a database holding encrypted content, then read that content back. **Not done:** needs a database seeded with encrypted content before the migration. The backfill test that came closest was reverted. **Blocked:** the work that would close this was reverted in f2fded4 while recovering a production outage. It is in history at dcdbcaf..8fd349c and is listed for re-application in docs/outstanding-verification.md.
 - [x] 6.4 Remove item 8 from `docs/outstanding-verification.md`
 - [x] 6.5 `openspec validate fix-encrypted-copy-sealing-id --strict`

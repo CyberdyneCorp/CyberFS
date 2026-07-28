@@ -41,7 +41,7 @@ entry-shaped.
 - [x] 2.4 Implement all three in `SqlNodeRepository`, with the "parent not trashed" predicate built once and shared by the listing and the count — the guard refusing a caller must be checking the same set the listing showed them
 - [x] 2.5 The "parent not trashed" test belongs in the `WHERE` clause, not after the `LIMIT`, or pages come back short while entries remain
 - [x] 2.6 Add the partial index on `(owner_id, deleted_at)` where `deleted_at IS NOT NULL` to `NodeRow.__table_args__`, with a comment distinguishing it from `ix_nodes_deleted_at`, which is deliberately not owner-scoped because the sweep crosses users
-- [ ] 2.7 Write the Alembic migration for the index and verify `alembic upgrade head`; note in the task whether `downgrade` was exercised, as the metadata change did **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [ ] 2.7 Write the Alembic migration for the index and verify `alembic upgrade head`; note in the task whether `downgrade` was exercised, as the metadata change did. **Partly done:** `upgrade` is exercised on every CI run and every deploy. `downgrade` is written and **not** exercised -- the migration rollback tests that would have shown it were reverted. See item 4 of docs/outstanding-verification.md.
 - [x] 2.8 Implement the three new methods on `FakeNodeRepository` in `tests/unit/fakes.py`, keeping the collapse rule and the ordering faithful so unit tests exercise the real rules and not a laxer fake
 
 ## 3. Use cases
@@ -94,20 +94,20 @@ Everything here needs real infrastructure: `FakeUnitOfWork` models no foreign
 keys, so no cascade, no partial index, and no recursive query can be proven
 against it.
 
-- [ ] 6.1 `GET /api/v1/trash` round-trips: upload, delete, list, restore by the identifier the listing supplied, confirm the file downloads again — the loop the spec requires and the API could not previously complete **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.2 A deleted folder of files yields one entry against real Postgres, with the subtree totals produced by the aggregate query rather than the fake **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.3 Pagination: more entries than the page size returns full pages, a working cursor, and the same `total_entries` on every page, with no short page while entries remain **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.4 Cross-user isolation over the API: Bob's trash never shows Alice's nodes, and a recipient whose grant existed at delete time sees nothing **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.5 Restoring a folder makes every descendant listable and downloadable again, verified through the API rather than the repository **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.6 A separately deleted child stays trashed after its parent is restored, then appears in the listing as its own entry and restores independently **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.7 Delete a file, create a new one with the same name in the same parent, then restore the first: `409 name_taken`, and the trashed subtree is still entirely trashed. Rename the live occupant and the restore then succeeds — the resolution `docs/api.md` documents **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.8 Reported quota after delete-then-restore matches the reconciliation job's recomputation, proved against real rows **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.9 `POST /api/v1/trash/purge` with the count the listing reported empties the trash, releases the quota, and leaves no object in MinIO that no metadata row references **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.10 A stale entry count returns `409 trash_count_mismatch` and the trash is untouched afterwards **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.11 A trash whose nodes exceed `TRASH_PURGE_NODE_BUDGET` needs two calls: the first reports entries remaining, the second (with the reported count) finishes, and no entry is ever observed half-destroyed **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.12 Emptying a trash containing a shared, encrypted, multi-version file removes its grants, wrapped keys, version rows, tags, and metadata — the FK cascades, which only real Postgres can demonstrate **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.13 The migration applies and the partial index exists — query `pg_indexes`, which is stable in CI. No `EXPLAIN` assertion here: on a freshly migrated database with a handful of rows the planner correctly prefers a sequential scan, so a plan assertion would fail, or pass for the wrong reason and become a test the suite learns to ignore. The plan is inspected in task 8.4 instead **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 6.14 Trashed nodes remain absent from `GET /nodes/{id}/children`, `GET /search`, and the S3 listing — the invariants this change must not loosen **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 6.1 `GET /api/v1/trash` round-trips: upload, delete, list, restore by the identifier the listing supplied, confirm the file downloads again — the loop the spec requires and the API could not previously complete Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [x] 6.2 A deleted folder of files yields one entry against real Postgres, with the subtree totals produced by the aggregate query rather than the fake
+- [x] 6.3 Pagination: more entries than the page size returns full pages, a working cursor, and the same `total_entries` on every page, with no short page while entries remain
+- [x] 6.4 Cross-user isolation over the API: Bob's trash never shows Alice's nodes, and a recipient whose grant existed at delete time sees nothing
+- [x] 6.5 Restoring a folder makes every descendant listable and downloadable again, verified through the API rather than the repository
+- [x] 6.6 A separately deleted child stays trashed after its parent is restored, then appears in the listing as its own entry and restores independently
+- [x] 6.7 Delete a file, create a new one with the same name in the same parent, then restore the first: `409 name_taken`, and the trashed subtree is still entirely trashed. Rename the live occupant and the restore then succeeds — the resolution `docs/api.md` documents
+- [x] 6.8 Reported quota after delete-then-restore matches the reconciliation job's recomputation, proved against real rows
+- [x] 6.9 `POST /api/v1/trash/purge` with the count the listing reported empties the trash, releases the quota, and leaves no object in MinIO that no metadata row references
+- [x] 6.10 A stale entry count returns `409 trash_count_mismatch` and the trash is untouched afterwards
+- [x] 6.11 A trash whose nodes exceed `TRASH_PURGE_NODE_BUDGET` needs two calls: the first reports entries remaining, the second (with the reported count) finishes, and no entry is ever observed half-destroyed
+- [x] 6.12 Emptying a trash containing a shared, encrypted, multi-version file removes its grants, wrapped keys, version rows, tags, and metadata — the FK cascades, which only real Postgres can demonstrate
+- [x] 6.13 The migration applies and the partial index exists — query `pg_indexes`, which is stable in CI. No `EXPLAIN` assertion here: on a freshly migrated database with a handful of rows the planner correctly prefers a sequential scan, so a plan assertion would fail, or pass for the wrong reason and become a test the suite learns to ignore. The plan is inspected in task 8.4 instead
+- [x] 6.14 Trashed nodes remain absent from `GET /nodes/{id}/children`, `GET /search`, and the S3 listing — the invariants this change must not loosen
 
 ## 7. End-to-end tests (`tests/e2e`, against a live deployment, marked `e2e`)
 
@@ -117,16 +117,16 @@ can restore, and the count guard turns any concurrent trash into a `409` that
 fails the whole session. Whole-trash emptying is proven in task 6.9 and 6.11,
 where the database is disposable.
 
-- [ ] 7.1 Against the deployment: upload, delete, find the file in `GET /api/v1/trash`, restore it, download it, then clean up by purging that id **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 7.2 Against the deployment: create a small folder tree, delete it, confirm it appears as one entry with plausible subtree totals and that `total_entries` is at least one, then restore it and clean up by purging the scratch id — no whole-trash operation **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 7.3 Leave `tests/e2e/conftest.py`'s teardown as it is: it trashes and purges exactly one identifiable scratch folder by id. Do not replace it with an empty-trash call — that would destroy unrelated trash in a live account and make teardown depend on the feature under test **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 7.1 Against the deployment: upload, delete, find the file in `GET /api/v1/trash`, restore it, download it, then clean up by purging that id Executed: verified against the deployment on 2026-07-28: 82 passed, 12 skipped, 0 failed.
+- [x] 7.2 Against the deployment: create a small folder tree, delete it, confirm it appears as one entry with plausible subtree totals and that `total_entries` is at least one, then restore it and clean up by purging the scratch id — no whole-trash operation
+- [x] 7.3 Leave `tests/e2e/conftest.py`'s teardown as it is: it trashes and purges exactly one identifiable scratch folder by id. Do not replace it with an empty-trash call — that would destroy unrelated trash in a live account and make teardown depend on the feature under test
 
 ## 8. Verification and documentation
 
 - [x] 8.1 `just lint`, `just typecheck`, `just test-unit` clean
-- [ ] 8.2 `just test-integration` clean, verified in CI rather than assumed; record the run and the test counts before and after so it is evident the new tests actually ran **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 8.3 `just test-e2e` clean against the deployment **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
-- [ ] 8.4 Measure the trash listing on a tree with a few hundred trashed nodes and record the numbers — the page aggregate and the `total_entries` count are the two reads this change introduces. Inspect the plan here, on seeded data, with `SET LOCAL enable_seqscan = off` if the planner needs persuading, rather than asserting a plan in CI **Not verified here:** no Docker daemon in this environment, so this could not be executed. Written and awaiting CI.
+- [x] 8.2 `just test-integration` clean, verified in CI rather than assumed; record the run and the test counts before and after so it is evident the new tests actually ran Executed: CI run 30397531581 on f2fded4: 338 integration tests passed.
+- [x] 8.3 `just test-e2e` clean against the deployment Executed: verified against the deployment on 2026-07-28: 82 passed, 12 skipped, 0 failed.
+- [ ] 8.4 Measure the trash listing on a tree with a few hundred trashed nodes and record the numbers. **Measured once and not recorded here:** a 240-node corpus on the deployment walked a tag search in 0.2s over 5 pages and listed a 61-node trash entry in 0.04s. The test that produced those numbers was reverted with the outage recovery, so the figures are anecdote rather than a repeatable measurement.
 - [x] 8.5 Document the trash in `README.md` and `docs/api.md`: the listing and its total, that entries are per deletion, that restore returns the subtree, that a restore can be refused `409 name_taken` and how to resolve it, and the empty-trash loop with its count guard and its node bound
 - [x] 8.6 Note in `docs/operations.md` that deployments may see trash entries appear for descendants stranded by folder restores performed before the cascading restore landed, and that the reconciliation job converges the quota buckets
 - [x] 8.7 Add `trash.emptied` to the activity action table in `docs/activity.md`, marked as a retained security record rather than activity
