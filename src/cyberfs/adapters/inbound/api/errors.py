@@ -34,6 +34,10 @@ _STATUS_BY_ERROR: tuple[tuple[type[err.CyberFSError], HTTPStatus], ...] = (
     (err.ValidationError, HTTPStatus.UNPROCESSABLE_ENTITY),
     (err.QuotaExceededError, HTTPStatus.INSUFFICIENT_STORAGE),
     (err.DependencyUnavailableError, HTTPStatus.SERVICE_UNAVAILABLE),
+    # 502, not 503: a dependency answered and refused *this deployment*, which no
+    # retry will change. 503 invited exactly the wrong response when the directory
+    # was refusing CyberFS for want of a scope.
+    (err.DependencyForbiddenError, HTTPStatus.BAD_GATEWAY),
     (err.KeyUnavailableError, HTTPStatus.INTERNAL_SERVER_ERROR),
     (err.IntegrityFailureError, HTTPStatus.INTERNAL_SERVER_ERROR),
 )

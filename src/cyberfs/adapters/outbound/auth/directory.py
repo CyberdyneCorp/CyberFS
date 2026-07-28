@@ -17,7 +17,7 @@ from collections.abc import Sequence
 import httpx
 
 from cyberfs.adapters.outbound.auth.service_token import ServiceTokenProvider
-from cyberfs.domain.errors import DependencyUnavailableError
+from cyberfs.domain.errors import DependencyForbiddenError, DependencyUnavailableError
 from cyberfs.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,6 +75,21 @@ class CyberdyneDirectory:
             )
             if response.status_code == httpx.codes.NOT_FOUND:
                 return None
+            if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+                # The directory answered and refused *us*. Reporting this as an
+                # outage cost real diagnosis time once already: CyberFS's OAuth
+                # client was registered without `directory:read`, every layer
+                # said "unavailable", and the apparent fix was to wait.
+                logger.error(
+                    "directory_lookup_forbidden",
+                    status=response.status_code,
+                    detail=response.text[:200],
+                    hint="grant this deployment's OAuth client the 'directory:read' scope",
+                )
+                raise DependencyForbiddenError(
+                    "CyberFS is not permitted to read the user directory; its OAuth "
+                    "client needs the 'directory:read' scope"
+                )
             response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.error("directory_lookup_failed", error=type(exc).__name__)
